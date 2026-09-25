@@ -1,0 +1,93 @@
+name: build-release
+
+# 手动触发（填版本号）或推送 v* 标签时自动构建并发布 Release。
+# 产物：Windows 安装包（NSIS）+ Go 引擎独立包 + 桌面端渲染层更新包。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（如 v2.1.0）'
+        required: true
+        default: 'v2.1.0'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Build backend
+        shell: bash
+        run: |
+          go build -trimpath -ldflags "-X main.version=${{ steps.ver.outputs.version }}" -o dist/ximo-agent.exe ./cmd/ximo-agent/
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build renderer/main/preload
+        working-directory: frontend
+        run: npx electron-vite build
+
+      - name: Build installer
+        working-directory: frontend
+        env:
+          CSC_IDENTITY_AUTO_SIGNING: 'false'
+        run: npx electron-builder --win --publish never
+
+      - name: Package backend zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/ximo-agent.exe,migrations,config.default.json -DestinationPath "dist/ximo-agent-${{ steps.ver.outputs.version }}.zip" -Force
+
+      - name: Package frontend update zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path frontend/out/*,frontend/package.json -DestinationPath "ximo-agent-frontend-${{ steps.ver.outputs.version }}.zip" -Force
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: XimoAgent ${{ steps.ver.outputs.version }}
+          body_path: docs/release-notes-${{ steps.ver.outputs.version }}.md
+          target_commitish: ${{ github.sha }}
+          files: |
+            frontend/release/*.exe
+            dist/ximo-agent-*.zip
+            ximo-agent-frontend-*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
