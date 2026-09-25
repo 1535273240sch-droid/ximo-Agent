@@ -19,7 +19,7 @@ import type {
   RunState,
   SubmitPayload
 } from '@shared/types'
-import { isTerminalState } from '@shared/types'
+import { CLUSTER_MODE_SIZE, isTerminalState } from '@shared/types'
 import type { Expert } from '../components/experts/experts-data'
 
 /** GO 模式拼进 system_prompt 的固定文案（任务1约定，纯前端拼接）。 */
@@ -130,6 +130,12 @@ interface StoreState {
   /** GO 模式开关（任务1）。 */
   goMode: boolean
   setGoMode: (v: boolean) => void
+  /**
+   * Agent 集群模式开关：打开后本次提交由引擎自动挑选 CLUSTER_MODE_SIZE 位
+   * 专家并行处理同一任务，再汇总产出。与手选专家互斥（专家是单点执行）。
+   */
+  clusterMode: boolean
+  setClusterMode: (v: boolean) => void
   /** 本次选用的模型（任务1）；undefined 表示跟随设置页全局默认。 */
   model?: string
   setModel: (m?: string) => void
@@ -295,6 +301,8 @@ export const useStore = create<StoreState>((set, get) => ({
   setPlanMode: (v) => set({ planMode: v }),
   goMode: false,
   setGoMode: (v) => set({ goMode: v }),
+  clusterMode: false,
+  setClusterMode: (v) => set({ clusterMode: v }),
   model: undefined,
   setModel: (m) => set({ model: m }),
   selectedExpert: undefined,
@@ -322,6 +330,10 @@ export const useStore = create<StoreState>((set, get) => ({
       if (st.goMode) built.system_prompt = buildGoSystemPrompt()
       if (st.planMode && !st.selectedExpert) built.plan_mode = true
       if (st.selectedExpert) built.expert_id = st.selectedExpert.id
+      // 集群模式与手选专家互斥：专家是单点执行，集群是"让引擎自动组队"。
+      // 两者同时存在时后端以 ExpertID 优先，所以这里干脆不发集群字段 ——
+      // 否则会出现"开了集群却在跑单个专家"的迷惑组合。
+      else if (st.clusterMode) built.cluster_size = CLUSTER_MODE_SIZE
       effective = Object.keys(built).length > 0 ? built : undefined
       // 专家绑定是「本次消息」语义：提交后即清空。
       if (st.selectedExpert) set({ selectedExpert: undefined })

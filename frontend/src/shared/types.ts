@@ -54,6 +54,13 @@ export interface SubmitPayload {
    * 与后端 ipcapi.SubmitPayload.ExpertID 一一对应（字段名、可选性必须一致）。
    */
   expert_id?: string
+  /**
+   * Agent 集群模式的专家数量（> 0 时开启，缺省表示关闭）。
+   *
+   * 引擎据此按任务内容自动组队、并行跑子代理，最后汇总成一份多视角报告。
+   * 与 expert_id 互斥：集群是"我不指定谁，让系统组队"，直连是"我就要这一位"。
+   */
+  cluster_size?: number
 }
 
 /** 提交后的句柄，对应 ipcapi.HandlePayload。 */
@@ -277,6 +284,18 @@ export interface RuntimeSettingsPayload {
    */
   mcp_servers?: MCPServerEntryPayload[]
 }
+
+/**
+ * Agent 集群模式派出的子代理数量。
+ *
+ * 取自后端 expert_agent 资源闸门的容量（internal/types/t02_run.go 的
+ * ResourceCapacities[ResourceClassExpertAgent] = 8），与设置页「子代理模型
+ * 分配」里对用户的说明「同时最多 8 个」保持一致。
+ *
+ * 这里刻意不给用户一个可调数字：调高没有意义 —— 超出的调用会在闸门里
+ * 排队，界面看起来就像"开了没生效"。
+ */
+export const CLUSTER_MODE_SIZE = 8
 
 /**
  * 一个 MCP 服务器条目，对应后端 ipcapi.MCPServerEntryPayload。

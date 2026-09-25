@@ -357,6 +357,14 @@ type SubmitRequest struct {
 	// 10 continuations) instead of the flat 30-round cap.
 	LongTask bool `json:"longTask,omitempty"`
 
+	// ClusterSize > 0 时以「Agent 集群」模式执行：引擎按任务内容自动挑选
+	// ClusterSize 位专家，并行跑子代理，最后汇总成一份多视角报告。
+	//
+	// 与 ExpertID（用户手选单一专家）互斥，由前端保证：集群是"我不指定谁，
+	// 让系统自己组队"，直连是"我就要这一位"。引擎侧集群分支优先判定。
+	// 上限由 expert_agent 资源闸门（8）兜住，超出部分排队而非拒绝。
+	ClusterSize int `json:"clusterSize,omitempty"`
+
 	// Priority selects the fair-queue class. Empty means PriorityNormal.
 	Priority Priority `json:"priority,omitempty"`
 

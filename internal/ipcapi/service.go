@@ -101,7 +101,8 @@ func (s *EngineService) handleSubmit(ctx context.Context, req *ipc.Frame) (*ipc.
 		PlanMode:     p.PlanMode,
 		// 任务3：把用户手选的专家带到 Engine，由它决定是否走「直连 Activate」
 		// 那条路径。为空时下游行为与改动前完全一致。
-		ExpertID: p.ExpertID,
+		ExpertID:    p.ExpertID,
+		ClusterSize: p.ClusterSize,
 	}
 	if p.Priority != "" {
 		submitReq.Priority = types.Priority(p.Priority)

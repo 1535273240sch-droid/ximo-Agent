@@ -88,6 +88,10 @@ type SubmitPayload struct {
 	// ExpertID 用户手选的专家 ID（任务3）。非空时 Engine 直接激活该专家编排，
 	// 跳过「等主模型自己决定要不要调用 agent_expert 工具」这一步。同样是追加。
 	ExpertID string `json:"expert_id,omitempty"`
+	// ClusterSize > 0 时以「Agent 集群」模式执行：引擎按任务内容自动挑选
+	// ClusterSize 位专家并行处理同一任务，再汇总产出。0 表示关闭。
+	// 与 ExpertID 互斥，由前端保证；引擎侧 ExpertID 优先。
+	ClusterSize int `json:"cluster_size,omitempty"`
 }
 
 // HandlePayload 是提交/查询 run 的统一响应体。

@@ -1062,6 +1062,15 @@ func (e *Engine) executeRun(ctx context.Context, rec *runRecord) {
 		return
 	}
 
+	// Agent 集群模式：不指定具体专家，让引擎按任务内容自动组队，多位专家
+	// 并行处理同一任务后汇总。同样是平行分支，主 Agent Loop 路径不受影响。
+	// 放在 ExpertID 之后：若两者同时存在（前端本应互斥），手选专家更具体，
+	// 优先尊重用户的明确选择。
+	if rec.request.ClusterSize > 0 {
+		e.executeClusterRun(runCtx, rec)
+		return
+	}
+
 	// Task 4: pick up the user's answer to a proposed plan, if one is waiting.
 	// The decision is consumed (cleared) here so that a later resume of the same
 	// run cannot silently re-apply it: an approval is spent exactly once.

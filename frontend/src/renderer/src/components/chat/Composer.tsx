@@ -6,6 +6,7 @@ import { isTerminalState } from '@shared/types'
 import { ModelPicker } from './ModelPicker'
 import { GoModeToggle } from './GoModeToggle'
 import { PlanModeToggle } from './PlanModeToggle'
+import { ClusterModeToggle } from './ClusterModeToggle'
 import { ExpertQuickPicker } from '../experts/ExpertQuickPicker'
 
 const LINE_HEIGHT_PX = 22
@@ -24,6 +25,8 @@ export function Composer(): React.JSX.Element {
   const setGoMode = useStore((s) => s.setGoMode)
   const planMode = useStore((s) => s.planMode)
   const setPlanMode = useStore((s) => s.setPlanMode)
+  const clusterMode = useStore((s) => s.clusterMode)
+  const setClusterMode = useStore((s) => s.setClusterMode)
   const selectedExpert = useStore((s) => s.selectedExpert)
   const setSelectedExpert = useStore((s) => s.setSelectedExpert)
   const [expertPickerOpen, setExpertPickerOpen] = useState(false)
@@ -171,6 +174,16 @@ export function Composer(): React.JSX.Element {
             disabledTitle={
               selectedExpert
                 ? `已选择专家「${selectedExpert.name}」：专家自带方案阶段，无需计划确认`
+                : undefined
+            }
+          />
+          <ClusterModeToggle
+            value={clusterMode}
+            onChange={setClusterMode}
+            disabled={selectedExpert !== undefined}
+            disabledTitle={
+              selectedExpert
+                ? `已选择专家「${selectedExpert.name}」：专家是单点执行，与集群的自动组队冲突`
                 : undefined
             }
           />
