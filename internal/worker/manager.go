@@ -100,6 +100,13 @@ type PoolSpec struct {
 	Factory Factory
 	// Priority 用于 Acquire 时在多个 kind 间排序（数值小者优先）。默认 0。
 	Priority int
+	// Config 是注入给该 kind 每个 Worker 实例的静态配置（见 Spec.Config），
+	// 例如 terminal 的 allowed_roots、mcp 的 servers、browser 的 headless。
+	//
+	// 必须在这里透传：所有高危域 Worker 的权限边界都来自 Spec.Config，而它们
+	// 一律 fail-closed。若池不把配置交给 Worker，Worker 只能拿到零值配置，
+	// 结果是「池起来了、工具也注册了，但任何一次调用都被策略拒绝」。
+	Config map[string]any
 }
 
 // Manager 是所有 Worker 的统一生命周期管理者。
@@ -268,6 +275,8 @@ type slot struct {
 	kind string
 	idx  int
 	prio int
+	// config 是该 kind 的池级静态配置，创建/重启 Worker 时透传（见 PoolSpec.Config）。
+	config map[string]any
 
 	mu       sync.Mutex
 	worker   Worker
@@ -337,6 +346,7 @@ func (m *Manager) addPool(ps PoolSpec) error {
 			kind:   ps.Kind,
 			idx:    i,
 			prio:   ps.Priority,
+			config: ps.Config,
 			state:  StateCold,
 			notify: make(chan struct{}, 1),
 		}
@@ -540,7 +550,7 @@ func (m *Manager) startSlot(ctx context.Context, s *slot) error {
 		s.mu.Unlock()
 	}()
 
-	spec := Spec{ID: fmt.Sprintf("%s-%d", s.kind, s.idx), Kind: s.kind}
+	spec := Spec{ID: fmt.Sprintf("%s-%d", s.kind, s.idx), Kind: s.kind, Config: s.config}
 	w, ferr := s.mgr.newWorker(spec, s)
 	if ferr != nil {
 		// 启动失败也要走统一的失败记账：否则"启动即失败"会变成无限快速重试，

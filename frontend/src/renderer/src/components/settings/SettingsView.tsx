@@ -1,7 +1,8 @@
-import { Info, Key, Palette, Server, Shield, Users } from 'lucide-react'
+import { Info, Key, Palette, Plug, Server, Shield, Users } from 'lucide-react'
 import { ProviderPanel } from './ProviderPanel'
 import { SubAgentModelPanel } from './SubAgentModelPanel'
 import { PermissionPanel } from './PermissionPanel'
+import { McpPanel } from './McpPanel'
 import { ThemePicker } from './ThemePicker'
 import { BackendPanel } from './BackendPanel'
 import { AboutPanel } from './AboutPanel'
@@ -46,6 +47,14 @@ export function SettingsView(): React.JSX.Element {
           hint="控制 Agent 使用工具时的放权程度：从逐项确认到完全放权；已写入配置文件，重启应用后生效"
         >
           <PermissionPanel />
+        </Section>
+
+        <Section
+          icon={<Plug size={15} className="text-accent" />}
+          title="MCP 服务器"
+          hint="挂载外部 MCP（Model Context Protocol）服务器，把它们的工具接入 Agent。保存后需重启后端引擎装配生效"
+        >
+          <McpPanel />
         </Section>
 
         <Section

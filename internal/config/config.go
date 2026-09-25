@@ -508,7 +508,85 @@ func DefaultRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
 		MaxRecoveryAttempts: 3,
 		AutoMode:            "safe",
+		// 默认启用不依赖额外外部二进制的 Worker 池，让 Agent 开箱即有工具可用。
+		// office 需要 officecli、computer-use 需要 pi-helper，缺失时其 Worker
+		// 会在启动后 health 失败并熔断，因此默认不预置，由用户按需在配置里开启。
+		// 这不影响安全：各高危域自身都是 fail-closed 的（allowed_roots 为空、
+		// enabled=false 即拒绝执行），默认启动池不等于放开权限。
+		WorkerPools: map[string]int{
+			"terminal":   2,
+			"browser":    1,
+			"mcp":        1,
+			"dynamic-js": 1,
+		},
 	}
+}
+
+// MCPServerConfig 描述一个 MCP 服务器。
+//
+// 字段与 worker/mcp.ServerConfig 对齐，但刻意不复用该类型：config 是被所有层
+// 依赖的最底层包，反向依赖 worker 会形成循环。类型转换在 bootstrap 层完成。
+type MCPServerConfig struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	// Enabled 用指针区分「未写」与「显式 false」：未写时视为启用（列出即想用），
+	// 只有显式写 false 才跳过。worker 侧的 ServerConfig.Enabled 是普通 bool 且
+	// 默认 false，若这里直接透传零值，用户写的每个服务器都会被静默跳过。
+	Enabled *bool `json:"enabled,omitempty"`
+	// stdio 传输
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"`
+	// http / sse 传输
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// 工具收敛：DeniedTools 中的工具永不暴露；AllowedTools 非空时只暴露其中工具。
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	DeniedTools  []string `json:"denied_tools,omitempty"`
+}
+
+// ToWorkerMap 把配置转成 worker/mcp.ServerConfig 可反序列化的形态。
+// 需要它是因为 Spec.Config 是 map[string]any，跨包时不保留 Go 类型信息。
+func (c MCPServerConfig) ToWorkerMap() map[string]any {
+	enabled := true
+	if c.Enabled != nil {
+		enabled = *c.Enabled
+	}
+	m := map[string]any{
+		"id":      c.ID,
+		"name":    c.Name,
+		"enabled": enabled,
+	}
+	if c.Transport != "" {
+		m["transport"] = c.Transport
+	}
+	if c.Command != "" {
+		m["command"] = c.Command
+	}
+	if len(c.Args) > 0 {
+		m["args"] = c.Args
+	}
+	if len(c.Env) > 0 {
+		m["env"] = c.Env
+	}
+	if c.Cwd != "" {
+		m["cwd"] = c.Cwd
+	}
+	if c.URL != "" {
+		m["url"] = c.URL
+	}
+	if len(c.Headers) > 0 {
+		m["headers"] = c.Headers
+	}
+	if len(c.AllowedTools) > 0 {
+		m["allowed_tools"] = c.AllowedTools
+	}
+	if len(c.DeniedTools) > 0 {
+		m["denied_tools"] = c.DeniedTools
+	}
+	return m
 }
 
 // SubAgentConfig 子代理模型分配（任务 5 设置面板的持久化形态）。
@@ -533,6 +611,9 @@ type Config struct {
 	Storage      StorageConfig    `json:"storage"`
 	Runtime      RuntimeConfig    `json:"runtime"`
 	FeatureFlags map[string]bool  `json:"feature_flags"`
+	// MCPServers 是挂载的 MCP 服务器清单。引擎启动时据此拉起 MCP Worker 池，
+	// 并把服务器暴露的工具桥接给 Agent（见 bootstrap/worker_tools.go）。
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
 
 	// Providers 是子代理模型池的额外候选（任务 5）。
 	//

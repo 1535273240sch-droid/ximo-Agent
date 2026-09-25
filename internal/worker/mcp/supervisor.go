@@ -73,6 +73,14 @@ func NewSupervisor(id string, cfg SupervisorConfig, clock worker.Clock, log work
 	if cfg.ConnectTimeout <= 0 {
 		cfg.ConnectTimeout = 20 * time.Second
 	}
+	// Factory 为 nil 时回退到内置传输工厂，兑现 SupervisorConfig.Factory 的
+	// 文档承诺（"为 nil 时按 transport 类型选择内置实现"）。缺了这一步，
+	// NewFromSpec 构造出的 Supervisor 里每个 session 都会在 Connect 阶段以
+	// 「未配置 TransportFactory」失败并降级，外部表现为「MCP 服务器永远连不上、
+	// tools/list 恒为空」，而内置工厂 DefaultTransportFactory 从未被任何调用点使用。
+	if cfg.Factory == nil {
+		cfg.Factory = DefaultTransportFactory
+	}
 	s := &Supervisor{
 		id:       id,
 		factory:  cfg.Factory,

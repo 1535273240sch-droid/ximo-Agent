@@ -268,6 +268,39 @@ export interface RuntimeSettingsPayload {
   providers?: ProviderEntryPayload[]
   /** 任务5新增：子代理候选模型分配。 */
   sub_agent?: SubAgentSettingsPayload
+  /**
+   * MCP 服务器清单，对应后端 config 的 mcp_servers 段。
+   *
+   * 语义与 providers 一致：undefined 表示"未携带"，后端沿用现有配置；
+   * 数组（含空数组）表示整体替换。改动需重启后端才装配生效 ——
+   * MCP Worker 池的生命周期绑定在引擎启动上。
+   */
+  mcp_servers?: MCPServerEntryPayload[]
+}
+
+/**
+ * 一个 MCP 服务器条目，对应后端 ipcapi.MCPServerEntryPayload。
+ *
+ * stdio 传输用 command/args/env/cwd；http 与 sse 传输用 url/headers。
+ */
+export interface MCPServerEntryPayload {
+  id?: string
+  name?: string
+  /** stdio | http | sse。留空时后端按「有 url 走 http，否则 stdio」推断。 */
+  transport?: string
+  /** 未设置视为启用；只有显式 false 才跳过该服务器。 */
+  enabled?: boolean
+  /** stdio：可执行文件与参数。 */
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string
+  /** http / sse：服务地址与请求头。 */
+  url?: string
+  headers?: Record<string, string>
+  /** 非空时只暴露其中工具；denied_tools 中的工具永不暴露。 */
+  allowed_tools?: string[]
+  denied_tools?: string[]
 }
 
 /** 任务5新增：候选池里的一个服务商，对应后端 ProviderEntryPayload。 */

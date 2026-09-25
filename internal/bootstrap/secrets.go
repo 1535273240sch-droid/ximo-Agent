@@ -76,6 +76,7 @@ func (a *App) GetRuntimeSettings() ipcapi.RuntimeSettingsPayload {
 		ConfigPath:      a.ConfigPath(),
 		Providers:       s.Providers,
 		SubAgent:        s.SubAgent,
+		MCPServers:      mcpServersToPayload(s.MCPServers),
 	}
 }
 
@@ -94,6 +95,7 @@ func (a *App) ApplyRuntimeSettings(ctx context.Context, in ipcapi.RuntimeSetting
 		DBPath:          in.DBPath,
 		Providers:       in.Providers,
 		SubAgent:        in.SubAgent,
+		MCPServers:      mcpServersFromPayload(in.MCPServers),
 	})
 }
 
@@ -230,6 +232,13 @@ type RuntimeSettings struct {
 	Providers []ipcapi.ProviderEntryPayload `json:"providers,omitempty"`
 	// SubAgent 是子代理模型分配（任务 5）。nil 的 map = 未携带，沿用。
 	SubAgent ipcapi.SubAgentSettingsPayload `json:"sub_agent"`
+
+	// MCPServers 是 MCP 服务器清单。nil = 未携带，沿用现有配置；
+	// 非 nil 时整体替换（含清空），与 Providers 同语义。
+	//
+	// 生效时机与其他配置不同：MCP Worker 池在引擎启动时装配，改完需重启
+	// 后端才生效（界面据此提示用户）。
+	MCPServers []config.MCPServerConfig `json:"mcp_servers,omitempty"`
 }
 
 // Settings 返回当前运行时配置。
@@ -281,6 +290,10 @@ func (a *App) Settings() RuntimeSettings {
 	if len(c.SubAgent.ByExpert) > 0 {
 		out.SubAgent.ByExpert = copyAssignment(c.SubAgent.ByExpert)
 	}
+	// MCP 清单同样拷贝一份，避免界面直接持有内部切片。
+	if len(c.MCPServers) > 0 {
+		out.MCPServers = append([]config.MCPServerConfig(nil), c.MCPServers...)
+	}
 	return out
 }
 
@@ -289,6 +302,59 @@ func copyAssignment(src map[string][]string) map[string][]string {
 	out := make(map[string][]string, len(src))
 	for k, v := range src {
 		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+// mcpServersToPayload 把配置层类型转成协议层条目。
+//
+// nil 保持 nil（表示"未携带"），空切片保持空（表示"整体清空"）——
+// 这两种语义在 ApplySettings 里含义不同，转换时不能合并。
+func mcpServersToPayload(in []config.MCPServerConfig) []ipcapi.MCPServerEntryPayload {
+	if in == nil {
+		return nil
+	}
+	out := make([]ipcapi.MCPServerEntryPayload, 0, len(in))
+	for _, s := range in {
+		out = append(out, ipcapi.MCPServerEntryPayload{
+			ID:           s.ID,
+			Name:         s.Name,
+			Transport:    s.Transport,
+			Enabled:      s.Enabled,
+			Command:      s.Command,
+			Args:         s.Args,
+			Env:          s.Env,
+			Cwd:          s.Cwd,
+			URL:          s.URL,
+			Headers:      s.Headers,
+			AllowedTools: s.AllowedTools,
+			DeniedTools:  s.DeniedTools,
+		})
+	}
+	return out
+}
+
+// mcpServersFromPayload 把协议层条目转成配置层类型，语义同 mcpServersToPayload。
+func mcpServersFromPayload(in []ipcapi.MCPServerEntryPayload) []config.MCPServerConfig {
+	if in == nil {
+		return nil
+	}
+	out := make([]config.MCPServerConfig, 0, len(in))
+	for _, s := range in {
+		out = append(out, config.MCPServerConfig{
+			ID:           s.ID,
+			Name:         s.Name,
+			Transport:    s.Transport,
+			Enabled:      s.Enabled,
+			Command:      s.Command,
+			Args:         s.Args,
+			Env:          s.Env,
+			Cwd:          s.Cwd,
+			URL:          s.URL,
+			Headers:      s.Headers,
+			AllowedTools: s.AllowedTools,
+			DeniedTools:  s.DeniedTools,
+		})
 	}
 	return out
 }
@@ -383,6 +449,12 @@ func (a *App) ApplySettings(ctx context.Context, in RuntimeSettings) error {
 	}
 	if in.SubAgent.ByExpert != nil {
 		a.cfg.SubAgent.ByExpert = in.SubAgent.ByExpert
+	}
+	// MCP 服务器清单：nil = 未携带，沿用；非 nil = 整体替换（含清空）。
+	// 这里只落配置，不重建 Worker 池 —— 池的生命周期绑定在引擎启动上，
+	// 改动在下一次后端启动时装配（界面会提示需要重启）。
+	if in.MCPServers != nil {
+		a.cfg.MCPServers = in.MCPServers
 	}
 
 	// 重新构造 Provider 让改动立即生效（尤其是模型名与 base_url）。

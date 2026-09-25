@@ -151,24 +151,26 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 	}
 	app.providerPort = prov
 
-	// --- 5. 工具运行时 ------------------------------------------------------
-	tools, idemStore, err := buildToolRuntime(cfg, opts, app, db)
-	if err != nil {
-		app.Close()
-		return nil, fmt.Errorf("bootstrap: build tool runtime: %w", err)
-	}
-
-	// --- 6. Worker 池（可选）------------------------------------------------
+	// --- 5. Worker 池（可选）------------------------------------------------
+	// 必须先于工具运行时：工具运行时要把池中的动作桥接成 Agent 可见的工具
+	// （见 worker_tools.go），所以池要先存在。
 	// 失败不致命：进程内工具（file/git/knowledge/web）仍可用，只是浏览器、
 	// 终端等高风险域会因找不到 Worker 而明确拒绝，这是可接受的降级。
 	if !opts.DisableWorkers {
-		mgr, err := buildWorkerManager(cfg)
+		mgr, err := buildWorkerManager(cfg, opts)
 		if err != nil {
 			observability.LogWarn(context.Background(),
 				"worker pools disabled: bootstrap could not start any pool", map[string]any{"err": err.Error()})
 		} else if mgr != nil {
 			app.workers = mgr
 		}
+	}
+
+	// --- 6. 工具运行时（含 Worker 工具桥接）----------------------------------
+	tools, idemStore, err := buildToolRuntime(cfg, opts, app, db)
+	if err != nil {
+		app.Close()
+		return nil, fmt.Errorf("bootstrap: build tool runtime: %w", err)
 	}
 
 	// --- 6. Engine 依赖 -----------------------------------------------------
@@ -391,22 +393,9 @@ func (unresolvedSecretResolver) Get(_ context.Context, secretRef string) (string
 //
 // 返回的第二个值是 Engine 恢复期使用的幂等分类端口。
 func buildToolRuntime(cfg *config.Config, opts Options, app *App, db *sqlite.DB) (ports.ToolRuntime, ports.IdempotencyStore, error) {
-	root := opts.WorkspaceRoot
-	if root == "" {
-		root = cfg.Runtime.WorkspaceRoot
-	}
-	if root == "" {
-		// 退化为进程工作目录。绝不退化成 "/" 或盘符根：那会让文件工具
-		// 拥有整块磁盘的写权限。
-		wd, err := os.Getwd()
-		if err != nil {
-			return nil, nil, fmt.Errorf("resolve workspace root: %w", err)
-		}
-		root = wd
-	}
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := resolveWorkspaceRoot(cfg, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve absolute workspace root: %w", err)
+		return nil, nil, err
 	}
 
 	registry := tool.NewRegistry()
@@ -431,6 +420,21 @@ func buildToolRuntime(cfg *config.Config, opts Options, app *App, db *sqlite.DB)
 	}
 	if err := registry.Register(web.New()); err != nil {
 		return nil, nil, fmt.Errorf("register web tool: %w", err)
+	}
+
+	// Worker 池工具（browser / terminal / office / dynamic-js / mcp / computer-use）。
+	// 只为配置里真正启用的 kind 注册：默认配置下模型看不到 office / computer-use
+	// 的工具，避免给出「看起来能调、实际必定失败」的假能力。
+	if app.workers != nil {
+		enabled := make(map[string]bool, len(cfg.Runtime.WorkerPools))
+		for kind, size := range cfg.Runtime.WorkerPools {
+			if size > 0 {
+				enabled[kind] = true
+			}
+		}
+		if err := registerWorkerTools(registry, app.workers, enabled); err != nil {
+			return nil, nil, fmt.Errorf("register worker tools: %w", err)
+		}
 	}
 
 	permission, err := tool.NewPermissionEngine(tool.DefaultPermissionConfigs(), nil)
@@ -485,9 +489,14 @@ func (toolCallResolver) ResolveToolCall(_ context.Context, toolCallID string) (s
 // NewWorkerFromSpec（mcp 包的工厂名叫 NewFromSpec）。所有高危域的工厂默认
 // fail-closed（例如 terminal 的 AllowRoots 为空即拒绝、computer-use 默认
 // Enabled=false），因此这里不做额外放开。
-func buildWorkerManager(cfg *config.Config) (*worker.Manager, error) {
+func buildWorkerManager(cfg *config.Config, opts Options) (*worker.Manager, error) {
 	if len(cfg.Runtime.WorkerPools) == 0 {
 		return nil, nil
+	}
+
+	root, err := resolveWorkspaceRoot(cfg, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	mgr := worker.NewManager(worker.ManagerConfig{})
@@ -502,7 +511,13 @@ func buildWorkerManager(cfg *config.Config) (*worker.Manager, error) {
 				"unknown worker kind in config, skipping pool", map[string]any{"kind": kind})
 			continue
 		}
-		if err := mgr.RegisterPool(worker.PoolSpec{Kind: kind, Size: size, Factory: factory}); err != nil {
+		spec := worker.PoolSpec{
+			Kind:    kind,
+			Size:    size,
+			Factory: factory,
+			Config:  workerPoolConfig(cfg, kind, root),
+		}
+		if err := mgr.RegisterPool(spec); err != nil {
 			return nil, fmt.Errorf("register pool %q: %w", kind, err)
 		}
 		registered++
@@ -514,6 +529,58 @@ func buildWorkerManager(cfg *config.Config) (*worker.Manager, error) {
 		return nil, fmt.Errorf("start worker manager: %w", err)
 	}
 	return mgr, nil
+}
+
+// resolveWorkspaceRoot 解析工具沙箱的根目录。
+//
+// 退化顺序：显式 Options > 配置文件 > 进程工作目录。绝不退化成 "/" 或盘符根：
+// 那会让 file 工具与所有 Worker 拥有整块磁盘的访问权限。
+func resolveWorkspaceRoot(cfg *config.Config, opts Options) (string, error) {
+	root := opts.WorkspaceRoot
+	if root == "" {
+		root = cfg.Runtime.WorkspaceRoot
+	}
+	if root == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve workspace root: %w", err)
+		}
+		root = wd
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute workspace root: %w", err)
+	}
+	return abs, nil
+}
+
+// workerPoolConfig 构造某个 kind 的 Worker 静态配置。
+//
+// 这里的每个 key 都是对应 Worker 的 fail-closed 边界，缺一个就整类能力不可用：
+//   - terminal / office / dynamic-js：allowed_roots 为空 ⇒ 一切路径操作被拒
+//     （terminal 连命令都过不了 resolveWorkdir，每条都会返回 no_allowed_roots）；
+//   - mcp：不给 servers ⇒ 0 个会话，tools/list 恒为空。
+//
+// 因此必须把工作区根注入进来，否则会出现「池起来了、工具也注册了，
+// 但每次调用都被策略拒绝」的空转状态。
+func workerPoolConfig(cfg *config.Config, kind, workspaceRoot string) map[string]any {
+	conf := map[string]any{
+		"allowed_roots": []string{workspaceRoot},
+	}
+	switch kind {
+	case "mcp":
+		if len(cfg.MCPServers) > 0 {
+			servers := make([]map[string]any, 0, len(cfg.MCPServers))
+			for _, s := range cfg.MCPServers {
+				servers = append(servers, s.ToWorkerMap())
+			}
+			conf["servers"] = servers
+		}
+	case "browser":
+		// 显式写出无头模式，不依赖 NewWorkerFromSpec 的隐式默认值。
+		conf["headless"] = true
+	}
+	return conf
 }
 
 // workerFactoryFor 返回指定 kind 的 Worker 工厂。

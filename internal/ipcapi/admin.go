@@ -108,6 +108,32 @@ type RuntimeSettingsPayload struct {
 	Providers []ProviderEntryPayload `json:"providers,omitempty"`
 	// SubAgent 是子代理模型分配（任务 5）。
 	SubAgent SubAgentSettingsPayload `json:"sub_agent"`
+	// MCPServers 是 MCP 服务器清单。nil 表示调用方未携带该字段（沿用现有
+	// 配置）；非 nil 时整体替换（含清空），与 Providers 同语义。
+	MCPServers []MCPServerEntryPayload `json:"mcp_servers,omitempty"`
+}
+
+// MCPServerEntryPayload 是界面可读写的 MCP 服务器条目。
+//
+// 刻意与 config.MCPServerConfig 重复定义而不是复用：ipcapi 是协议层，
+// 复用配置层的类型会让协议版本与配置结构永久绑死，配置侧一改字段协议就破。
+type MCPServerEntryPayload struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	// Enabled 为指针：nil（未携带）视为启用，只有显式 false 才跳过该服务器。
+	Enabled *bool `json:"enabled,omitempty"`
+	// stdio 传输
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"`
+	// http / sse 传输
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// AllowedTools 非空时只暴露其中工具；DeniedTools 中的工具永不暴露。
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	DeniedTools  []string `json:"denied_tools,omitempty"`
 }
 
 // AdminOption 配置 AdminService。
