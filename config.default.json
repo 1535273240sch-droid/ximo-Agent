@@ -1,0 +1,45 @@
+{
+  "supervisor": {
+    "heartbeat_interval": 2000000000,
+    "heartbeat_timeout": 6000000000,
+    "graceful_shutdown_timeout": 30000000000,
+    "max_restart_retries": 10,
+    "restart_backoff_steps": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      30
+    ],
+    "enable_process_tree_kill": true
+  },
+  "ipc": {
+    "pipe_name": "\\\\.\\pipe\\ximo-agent-ipc",
+    "socket_path": "/tmp/ximo-agent-ipc.sock",
+    "default_timeout": 15000000000,
+    "max_payload_length": 16777216,
+    "read_buffer_size": 65536
+  },
+  "paths": {
+    "base_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent",
+    "versions_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\versions",
+    "current_pointer_file": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\current",
+    "previous_pointer_file": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\previous",
+    "current_version_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\versions\\current",
+    "previous_version_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\versions\\previous",
+    "data_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\data",
+    "logs_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\data\\logs",
+    "crash_dump_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\data\\crashes",
+    "run_dir": "C:\\Users\\Administrator\\AppData\\Roaming\\ximo-agent\\data\\run"
+  },
+  "feature_flags": {
+    "checkpoint.cas": true,
+    "context.v2": true,
+    "engine.v2": true,
+    "scheduler.v2": true,
+    "worker.browser": true,
+    "worker.dynamic_js": true,
+    "worker.mcp": true
+  }
+}

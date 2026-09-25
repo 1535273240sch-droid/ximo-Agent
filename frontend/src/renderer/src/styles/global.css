@@ -1,0 +1,312 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * 极简奢华视觉系统 (Crisp Precision Design System).
+ *
+ * 核心准则：
+ *  - 纯粹利落：杜绝一切霓虹、噪点、炫光与多层模糊。
+ *  - 刀锋锐利排版：文本容器禁止 backdrop-filter 雾化，确保 subpixel 抗锯齿清晰。
+ *  - 精密 1px 细线、8-10px 内敛圆角、极轻漫射投影。
+ */
+
+:root {
+  --c-canvas: 9 9 11;
+  --c-surface: 16 16 18;
+  --c-surface-raised: 21 21 23;
+  --c-border: 255 255 255;
+  --c-border-alpha: 0.08;
+
+  --c-ink: 245 245 245;
+  --c-ink-muted: 146 146 153;
+  --c-ink-faint: 95 96 103;
+
+  --c-accent: 99 102 241;
+  --c-accent-ink: 255 255 255;
+  --c-danger: 239 68 68;
+  --c-success: 16 185 129;
+  --c-warning: 245 158 11;
+
+  --font-ui: 'Inter', 'Geist', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  --font-display: 'Inter', 'Geist', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Geist Mono', 'SF Mono', Consolas, 'Noto Sans Mono CJK SC', monospace;
+
+  --radius-main: 10px;
+  --shadow-subtle: 0 1px 2px 0 rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 4px 16px -2px rgba(0, 0, 0, 0.4), 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgb(var(--c-ink));
+  background-color: rgb(var(--c-canvas));
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+
+/* ==========================================================================
+   精密极简面板与结构类 (Crisp Structural Components)
+   ========================================================================== */
+
+@layer components {
+  /*
+   * 基础面板：实心面板色，配极淡的 1px 轮廓线，杜绝模糊与厚重边界。
+   */
+  .glass-panel {
+    background-color: rgb(var(--c-surface));
+    border: 1px solid rgb(var(--c-border) / var(--c-border-alpha));
+    border-radius: var(--radius-main);
+    box-shadow: var(--shadow-subtle);
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .glass-panel-hover:hover {
+    background-color: rgb(var(--c-surface-raised));
+    border-color: rgb(var(--c-border) / calc(var(--c-border-alpha) * 1.8));
+  }
+
+  /*
+   * 悬浮/抬升层：用于激活项、抽屉、弹窗
+   */
+  .glass-raised {
+    background-color: rgb(var(--c-surface-raised));
+    border: 1px solid rgb(var(--c-border) / calc(var(--c-border-alpha) * 1.6));
+    border-radius: var(--radius-main);
+    box-shadow: var(--shadow-card);
+  }
+
+  /*
+   * 凹槽输入层：用于文本框、输入行、代码区。
+   *
+   * 刻意做得极轻：底色只在面板色上叠一点画布色（而不是整块画布色），
+   * 边界线用最低不透明度。输入框是界面上出现频率最高的元素，任何多余的
+   * 描边、内阴影或过渡都会累积成视觉噪点——这里只保留"能看出是个输入区"
+   * 所需的最小信息量。
+   */
+  .glass-inset {
+    background-color: rgb(var(--c-canvas) / 0.45);
+    border: 1px solid rgb(var(--c-border) / calc(var(--c-border-alpha) * 0.85));
+    border-radius: calc(var(--radius-main) - 2px);
+  }
+
+  .glass-inset:focus-within {
+    background-color: rgb(var(--c-canvas) / 0.6);
+    border-color: rgb(var(--c-accent) / 0.45);
+  }
+
+  /*
+   * 侧边栏：整洁干练，与画布分离
+   */
+  .glass-sidebar {
+    background-color: rgb(var(--c-surface));
+    border-right: 1px solid rgb(var(--c-border) / var(--c-border-alpha));
+  }
+
+  /*
+   * 极简强调色按钮
+   */
+  .glass-accent {
+    background-color: rgb(var(--c-accent) / 0.12);
+    border: 1px solid rgb(var(--c-accent) / 0.3);
+    color: rgb(var(--c-accent));
+    border-radius: calc(var(--radius-main) - 2px);
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .glass-accent:hover {
+    background-color: rgb(var(--c-accent) / 0.2);
+    border-color: rgb(var(--c-accent) / 0.5);
+  }
+
+  .glass-accent-solid {
+    background-color: rgb(var(--c-accent));
+    color: rgb(var(--c-accent-ink));
+    border-radius: calc(var(--radius-main) - 2px);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+    transition: opacity 150ms ease;
+  }
+
+  .glass-accent-solid:hover {
+    opacity: 0.92;
+  }
+
+  /* 窗口拖拽区域支持 */
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
+/* ==========================================================================
+   排版与 Markdown 正文 (Typography & Prose)
+   ========================================================================== */
+
+/* 正文严禁低于 12px，常用正文 13-14px */
+.prose-glass {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: rgb(var(--c-ink));
+  word-break: break-word;
+}
+
+.prose-glass p {
+  margin: 0.5em 0;
+}
+
+.prose-glass ul,
+.prose-glass ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+
+.prose-glass a {
+  color: rgb(var(--c-accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose-glass blockquote {
+  margin: 0.6em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid rgb(var(--c-accent) / 0.5);
+  color: rgb(var(--c-ink-muted));
+}
+
+.prose-glass table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  width: 100%;
+  font-size: 13px;
+}
+
+.prose-glass th,
+.prose-glass td {
+  border: 1px solid rgb(var(--c-border) / var(--c-border-alpha));
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+
+pre,
+code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+/* ==========================================================================
+   滚动条
+   ========================================================================== */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--c-ink-faint) / 0.35);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--c-ink-faint) / 0.55);
+}
+
+/* ==========================================================================
+   焦点环
+   ========================================================================== */
+
+/*
+ * 只在"独立焦点元素"上画焦点环。
+ *
+ * 关键：输入类元素（input/textarea/select）不画 outline。它们的外层
+ * .glass-inset 已经用 :focus-within 表达了聚焦状态；如果这里再画一圈，
+ * 就会出现「外层 accent 边框 + 内层 outline」的多重线条。
+ */
+:focus-visible {
+  outline: 2px solid rgb(var(--c-accent) / 0.55);
+  outline-offset: 1px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+.glass-inset input:focus-visible,
+.glass-inset textarea:focus-visible {
+  outline: none;
+}
+
+/* 输入类元素统一去掉浏览器默认外观，避免出现额外的内嵌边框。 */
+input,
+textarea,
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-clip: padding-box;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* ==========================================================================
+   平滑渐入 (禁用分数缩放 transform: scale，确保文本边缘不重采样模糊)
+   ========================================================================== */
+
+@keyframes subtle-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-glass-in {
+  animation: subtle-fade-in 150ms ease-out both;
+}
+
+@keyframes pulse-subtle {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.animate-pulse-soft {
+  animation: pulse-subtle 1.8s ease-in-out infinite;
+}

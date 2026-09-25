@@ -1,27 +1,43 @@
-node_modules/
-out/
-release/
-dist/
-*.log
+# Binaries
 *.exe
-*.tsbuildinfo
-tsc_web.txt*
-.DS_Store
-.vscode/
-.idea/
-.trae/
-.env
-.env.*
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+ximo-agent.exe
 
-# 无关临时文件
-temp/
-known_hosts_tmp
+# Runtime Data & Logs
+data/
+crashes/
 *.db
+*.db-wal
+*.db-shm
+*.log
 
-# 翻译缓存
-.translate-cache.json
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/out/
+frontend/dist/
+frontend/release/
+frontend/shots/
+frontend/.vite/
 
-# 审查/工作产物
-.workbuddy/
-deliverables/
+# Backend build output
+dist/
 
+# Screenshots / scratch
+shots/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local configuration overrides (may hold secret references)
+config.local.json
