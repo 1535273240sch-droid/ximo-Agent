@@ -1,0 +1,26 @@
+[Unit]
+Description=XIMO 中转站（ximo-gateway）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ximo-gateway
+EnvironmentFile=/home/ubuntu/ximo-gateway/gateway.env
+# price-micro-per-ktok 是**占位价**（1 个 credit = 1000000 微单位；这里 1000000 微/千 token
+# 即 1 credit/千 token），只为让计费链路非零可见；上线前必须按真实成本改掉。
+ExecStart=/home/ubuntu/ximo-gateway/ximo-gateway --addr 0.0.0.0:8600 --db /home/ubuntu/ximo-gateway/data/gateway.db --migrations /home/ubuntu/ximo-gateway/migrations --reap-interval 1m --price-micro-per-ktok 1000000
+Restart=always
+RestartSec=3
+
+# 最小权限：只需自己的目录与网络
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/ximo-gateway
+
+[Install]
+WantedBy=multi-user.target

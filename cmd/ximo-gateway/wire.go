@@ -17,7 +17,6 @@ import (
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/upstream"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/observability"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/quota"
-	"github.com/ximo888ok-netizen/ximo-agent/internal/secrets"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/storage/sqlite"
 )
 
@@ -48,9 +47,9 @@ func buildStack(ctx context.Context, opt options, db *sqlite.DB, logger *observa
 	accountSvc := account.New(gwStore, gatewayPepper())
 	quotaSvc := quota.New(gwStore)
 
-	// 密钥：先建后端，再把 Manager 适配成 upstream 需要的 SecretResolver。
-	secretsMgr := secretsForGateway(ctx, logger)
-	pool := upstream.NewWithOptions(gwStore, secretResolver{mgr: secretsMgr}, upstream.Options{Logger: logger})
+	// 密钥：先建后端，再把它适配成 upstream 需要的 SecretResolver。
+	secretsMgr := secretsForGateway(ctx, logger, opt.dbPath)
+	pool := upstream.NewWithOptions(gwStore, secretResolver{store: secretsMgr}, upstream.Options{Logger: logger})
 	// catalog 的 Probe 传池子本身（Healthy 由上游熔断器状态决定），因此候选列表里
 	// 不会出现正在熔断的 provider。
 	cat := catalog.New(gwStore, pool)
@@ -79,7 +78,7 @@ func mountRoutes(
 	quotaSvc *quota.Service,
 	cat *catalog.Catalog,
 	pool *upstream.Pool,
-	secretsMgr *secrets.Manager,
+	secretsMgr secretStore,
 	authn *gateway.Authenticator,
 	limiter *gateway.KeyLimiter,
 	logger *observability.Logger,
@@ -166,10 +165,10 @@ func mountRoutes(
 
 // adminSecretsWriter 返回管理面用的密钥写入面（admin.Secrets 只暴露 Put）。
 //
-// mgr 为 nil 时必须返回**真正的 nil 接口**：把 (*secrets.Manager)(nil) 装进接口会得到
-// 一个非 nil 的接口值，admin 里 "h.d.Secrets == nil" 的检查会失效，随后的 Put 会在空
-// 指针上 panic。这里显式挡掉这种情况。
-func adminSecretsWriter(mgr *secrets.Manager) admin.Secrets {
+// mgr 为 nil 时必须返回**真正的 nil 接口**：把带 nil 底层的接口值装进去会得到一个
+// 非 nil 的接口，admin 里 "h.d.Secrets == nil" 的检查会失效，随后的 Put 会 panic。
+// 这里显式挡掉这种情况。
+func adminSecretsWriter(mgr secretStore) admin.Secrets {
 	if mgr == nil {
 		return nil
 	}

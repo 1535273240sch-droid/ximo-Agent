@@ -18,9 +18,9 @@ import (
 
 	"github.com/ximo888ok-netizen/ximo-agent/internal/account"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/model"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/secretref"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/store"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/quota"
-	"github.com/ximo888ok-netizen/ximo-agent/internal/secrets"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/storage/migrations"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/storage/sqlite"
 )
@@ -33,38 +33,35 @@ const (
 	testClientIP   = "203.0.113.7"
 )
 
-// memBackend 是 internal/secrets 的内存后端（测试用真后端需要凭证管理器，不适合单测）。
-type memBackend struct {
+// fakeSecrets 是测试用的内存密钥后端：只实现 admin.Secrets 需要的 Put，以及断言用的 Get。
+//
+// 刻意不依赖 internal/secrets —— 那个包目前只在 Windows 上能编译（fallback.go 无条件
+// 引用 DPAPI/CredentialBackend），而网关要部署到 Linux，生产代码与测试都不该被它拖住。
+type fakeSecrets struct {
 	mu     sync.Mutex
 	values map[string]string
 }
 
-func (b *memBackend) Get(ref string) (string, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	v, ok := b.values[ref]
+func newFakeSecrets() *fakeSecrets { return &fakeSecrets{values: map[string]string{}} }
+
+func (s *fakeSecrets) Get(ref string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.values[ref]
 	if !ok {
-		return "", secrets.ErrSecretNotFound
+		return "", fmt.Errorf("fakeSecrets: %s 不存在", ref)
 	}
 	return v, nil
 }
 
-func (b *memBackend) Put(ref, value string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.values[ref] = value
-	return nil
+// Put 与生产后端同规则：ref 由明文派生（同一值 -> 同一 ref），库里只留 ref。
+func (s *fakeSecrets) Put(value string) (string, error) {
+	ref := secretref.ForValue(value)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values[ref] = value
+	return ref, nil
 }
-
-func (b *memBackend) Delete(ref string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.values, ref)
-	return nil
-}
-
-func (b *memBackend) Available() bool { return true }
-func (b *memBackend) Name() string    { return "memory-test" }
 
 type env struct {
 	t        *testing.T
@@ -72,7 +69,7 @@ type env struct {
 	db       *sqlite.DB
 	store    *store.Store
 	accounts *account.Service
-	secrets  *secrets.Manager
+	secrets  *fakeSecrets
 	srv      *httptest.Server
 }
 
@@ -91,10 +88,7 @@ func newEnv(t *testing.T, mutate func(*Deps)) *env {
 	}
 	st := store.New(db)
 	accts := account.New(st, nil)
-	sec, err := secrets.NewManager(&memBackend{values: map[string]string{}})
-	if err != nil {
-		t.Fatalf("secrets manager: %v", err)
-	}
+	sec := newFakeSecrets()
 	d := Deps{
 		Store:      st,
 		Accounts:   accts,
@@ -630,7 +624,7 @@ func TestProviderPlaintextKeyNeverPersisted(t *testing.T) {
 		t.Fatalf("响应回显了明文密钥: %s", r.raw)
 	}
 	ref, _ := r.body["api_key_ref"].(string)
-	if !secrets.IsRef(ref) {
+	if !secretref.IsRef(ref) {
 		t.Fatalf("api_key_ref = %q, want secretref:v1:...", ref)
 	}
 

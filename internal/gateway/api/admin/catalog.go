@@ -9,7 +9,7 @@ import (
 
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/httpx"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/model"
-	"github.com/ximo888ok-netizen/ximo-agent/internal/secrets"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/secretref"
 )
 
 // ---------------------------------------------------------------- 模型目录
@@ -235,7 +235,7 @@ func (h *handler) upsertProvider(w http.ResponseWriter, r *http.Request) {
 	if keyRef != "" {
 		spec.APIKeyRef = keyRef
 	}
-	if spec.APIKeyRef != "" && !secrets.IsRef(spec.APIKeyRef) {
+	if spec.APIKeyRef != "" && !secretref.IsRef(spec.APIKeyRef) {
 		// 兜底：任何情况下都不允许把非 ref 的字符串写进 api_key_ref。
 		h.fail(w, r, actionProviderUpsert, id, badRequest("api_key_ref 必须是 secretref:v1:... 形式"))
 		return
@@ -300,7 +300,7 @@ func (h *handler) resolveKeyRef(apiKeyRef, plainKey string) (string, error) {
 	if plainKey != "" {
 		value = plainKey
 	}
-	if secrets.IsRef(value) {
+	if secretref.IsRef(value) {
 		return value, nil
 	}
 	if h.d.Secrets == nil {
@@ -311,7 +311,7 @@ func (h *handler) resolveKeyRef(apiKeyRef, plainKey string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !secrets.IsRef(ref) {
+	if !secretref.IsRef(ref) {
 		return "", errors.New("admin: 密钥后端未返回合法的 secretref")
 	}
 	return ref, nil
