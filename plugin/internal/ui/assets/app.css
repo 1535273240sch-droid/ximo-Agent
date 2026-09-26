@@ -849,3 +849,187 @@ input.mono, select.mono { font-family: var(--font-mono); font-size: 13px; }
    --fail-red #7d1f1f →  8.4:1   ✓
    --gold  #b8860b → 2.7:1 仅用于描边/填充/大字号标题，不用于正文
    ------------------------------------------------------------------------ */
+
+/* ============================================================================
+   视觉返工 v2 —— 让玻璃真的像玻璃、让羊皮纸真的像羊皮卷
+   （本节位于文件末尾，靠层叠覆盖前面同名规则；不修改既有规则本身）
+   返工依据：验收方用浏览器实看后判定
+     · 玻璃面板呈「不透明奶油色卡片」——根因是面板背后是近乎均匀的底色，
+       blur 没有可模糊的层次；
+     · 羊皮纸只做到「米黄纸」，缺少做旧边缘、卷曲端头、纤维与陈年斑；
+     · 内容区偏白发平，标题/正文层级不足。
+   ========================================================================== */
+
+/* ── 1. 先把底色做「不均匀」：大尺度明暗 + 陈年斑 + 四角做旧压暗 ───────── */
+:root {
+  /* 墨色再压深一档，拉开标题与正文的层级 */
+  --ink: #33281c;
+  --ink-2: #5d4b36;
+}
+
+body {
+  background-color: #d9be95;
+  background-image:
+    var(--noise),
+    /* 陈年水渍/斑：大尺度、低饱和，但要肉眼可见 */
+    radial-gradient(38% 30% at 17% 12%, rgba(139, 96, 45, .22) 0%, rgba(139, 96, 45, 0) 70%),
+    radial-gradient(46% 34% at 83% 20%, rgba(120, 80, 38, .19) 0%, rgba(120, 80, 38, 0) 72%),
+    radial-gradient(54% 42% at 70% 90%, rgba(104, 66, 28, .22) 0%, rgba(104, 66, 28, 0) 74%),
+    radial-gradient(30% 26% at 32% 74%, rgba(152, 110, 56, .18) 0%, rgba(152, 110, 56, 0) 70%),
+    /* 四角做旧压暗（vignette） */
+    radial-gradient(126% 126% at 50% 46%, rgba(92, 62, 26, 0) 50%, rgba(92, 62, 26, .32) 100%),
+    /* 大尺度明暗 */
+    radial-gradient(92% 62% at 8% -4%, #fdf7e8 0%, rgba(253, 247, 232, 0) 62%),
+    linear-gradient(168deg, #f4e6cb 0%, #e5cfa6 48%, #cbA879 100%);
+  background-attachment: fixed;
+}
+
+/* 纤维噪点再实一点 */
+.paper-layer { opacity: .88; }
+
+/* ── 2. 玻璃：半透明 + 更强模糊 + 高光边 + 斜向反光 ─────────────────── */
+.glass {
+  background-color: transparent;
+  background-image:
+    var(--noise-soft),
+    /* 斜向反光带（很淡，靠它读出「这是一块玻璃」） */
+    linear-gradient(115deg, rgba(255, 255, 255, .30) 0%, rgba(255, 255, 255, 0) 34%,
+                            rgba(255, 255, 255, 0) 68%, rgba(255, 255, 255, .16) 100%),
+    linear-gradient(160deg, rgba(255, 252, 244, .42) 0%, rgba(255, 246, 232, .24) 55%,
+                            rgba(255, 250, 240, .34) 100%);
+  border: 1px solid rgba(255, 255, 255, .55);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+  box-shadow:
+    0 22px 48px rgba(76, 52, 24, .22),
+    0 2px 8px rgba(76, 52, 24, .14),
+    inset 0 1px 0 rgba(255, 255, 255, .78),
+    inset 0 -1px 0 rgba(255, 255, 255, .26);
+}
+
+/* 不支持 backdrop-filter：必须退回可读的实底（重声明，压过上一节与本节） */
+@supports not ((-webkit-backdrop-filter: blur(22px)) or (backdrop-filter: blur(22px))) {
+  .glass {
+    background-color: rgba(255, 250, 240, .92);
+    background-image: var(--noise-soft);
+  }
+}
+
+/* ── 3. 左侧导航：卷起的羊皮纸缎带（上下端头卷曲 + 做旧内阴影） ──────── */
+.toc {
+  box-shadow:
+    0 20px 44px rgba(76, 52, 24, .20),
+    inset 0 1px 0 rgba(255, 255, 255, .7),
+    inset 6px 0 14px rgba(120, 86, 44, .12),
+    inset -6px 0 14px rgba(120, 86, 44, .10);
+}
+
+.toc::before,
+.toc::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 15px;
+  pointer-events: none;
+  border-radius: 50% / 42%;
+}
+
+.toc::before {
+  top: -8px;
+  background: linear-gradient(180deg, rgba(118, 84, 42, .36) 0%, rgba(118, 84, 42, .14) 45%, rgba(118, 84, 42, 0) 100%);
+}
+
+.toc::after {
+  bottom: -8px;
+  background: linear-gradient(0deg, rgba(118, 84, 42, .32) 0%, rgba(118, 84, 42, .12) 46%, rgba(118, 84, 42, 0) 100%);
+}
+
+/* 蜡封徽章：更立体 + 轻微旋转，仍保证文字可读 */
+.seal {
+  transform: rotate(-4deg);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .45);
+  box-shadow:
+    0 4px 10px rgba(107, 77, 18, .38),
+    0 1px 0 rgba(255, 255, 255, .35),
+    inset 0 2px 0 rgba(255, 255, 255, .55),
+    inset 0 -3px 6px rgba(88, 60, 8, .42);
+}
+
+/* ── 4. 层级：标题更重、更大，正文一档更深 ─────────────────────────── */
+.masthead-title { font-weight: 700; letter-spacing: -.01em; }
+
+.page h2 {
+  font-size: clamp(21px, 2.8vw, 27px);
+  font-weight: 700;
+  letter-spacing: -.01em;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .55);
+}
+
+.page h3 {
+  font-size: 16.5px;
+  font-weight: 700;
+  color: #453721;
+}
+
+.page-lede { color: #4a3a29; }
+
+/* ============================================================================
+   视觉返工 v3 —— v2 的教训与修正
+   v2 只在「大尺度低对比渐变」上做文章，实测截图与改造前几乎无差别，原因：
+     1) 面板几乎铺满视口，缺少「背景」作参照；
+     2) 斑驳是大尺度平滑渐变，blur 一块平滑渐变 ≈ 什么都没做；
+     3) 浅色面板压在浅色底上，没有玻璃板应有的明暗落差。
+   修正思路：底色压到中间调 + 加入**硬边**装饰（硬边被 blur 抹开才看得出玻璃）
+   + 面板提高透明度让背后的形状透出来。
+   ========================================================================== */
+
+/* ── 1. 中间调暖色书桌底 + 硬边装饰（玻璃要靠它们才显形） ───────────── */
+body {
+  background-color: #c6a67a;
+  background-image:
+    var(--noise),
+    /* 硬边「蜡封压痕」圆环：环形边缘是硬边，模糊后成为可辨识的柔光斑 */
+    radial-gradient(circle at 26% 22%, rgba(66, 42, 16, 0) 118px, rgba(66, 42, 16, .22) 120px, rgba(66, 42, 16, .22) 133px, rgba(66, 42, 16, 0) 135px),
+    radial-gradient(circle at 74% 76%, rgba(66, 42, 16, 0) 96px, rgba(66, 42, 16, .20) 98px, rgba(66, 42, 16, .20) 111px, rgba(66, 42, 16, 0) 113px),
+    /* 硬边墨迹条带（斜向） */
+    linear-gradient(104deg, rgba(70, 46, 20, 0) 30%, rgba(70, 46, 20, .16) 30.4%, rgba(70, 46, 20, .16) 41%, rgba(70, 46, 20, 0) 41.4%),
+    linear-gradient(76deg, rgba(70, 46, 20, 0) 64%, rgba(70, 46, 20, .14) 64.5%, rgba(70, 46, 20, .14) 72%, rgba(70, 46, 20, 0) 72.5%),
+    /* 细碎纸渍（小而暗的点，硬边） */
+    radial-gradient(circle at 12% 62%, rgba(58, 36, 12, .26) 0 3px, rgba(58, 36, 12, 0) 4px),
+    radial-gradient(circle at 63% 14%, rgba(58, 36, 12, .22) 0 2px, rgba(58, 36, 12, 0) 3px),
+    radial-gradient(circle at 88% 38%, rgba(58, 36, 12, .20) 0 3px, rgba(58, 36, 12, 0) 4px),
+    radial-gradient(circle at 44% 88%, rgba(58, 36, 12, .22) 0 2px, rgba(58, 36, 12, 0) 3px),
+    /* 大尺度明暗与四角做旧 */
+    radial-gradient(130% 130% at 50% 44%, rgba(78, 50, 20, 0) 46%, rgba(78, 50, 20, .34) 100%),
+    radial-gradient(96% 66% at 6% -6%, #f0dcbb 0%, rgba(240, 220, 187, 0) 58%),
+    linear-gradient(170deg, #dcc39b 0%, #c0a075 52%, #9d7f57 100%);
+  background-attachment: fixed;
+}
+
+/* ── 2. 玻璃：更透明 + 更强模糊，让背后的硬边形状透出来 ─────────────── */
+.glass {
+  background-color: transparent;
+  background-image:
+    var(--noise-soft),
+    linear-gradient(115deg, rgba(255, 255, 255, .34) 0%, rgba(255, 255, 255, 0) 32%,
+                            rgba(255, 255, 255, 0) 70%, rgba(255, 255, 255, .18) 100%),
+    linear-gradient(160deg, rgba(255, 253, 247, .44) 0%, rgba(255, 247, 235, .30) 58%,
+                            rgba(255, 252, 244, .38) 100%);
+  border: 1px solid rgba(255, 255, 255, .62);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+  box-shadow:
+    0 26px 56px rgba(60, 38, 14, .30),
+    0 2px 8px rgba(60, 38, 14, .16),
+    inset 0 1px 0 rgba(255, 255, 255, .85),
+    inset 0 -1px 0 rgba(255, 255, 255, .30);
+}
+
+/* 不支持 backdrop-filter：退回可读实底（重声明，必须在本节最后生效） */
+@supports not ((-webkit-backdrop-filter: blur(24px)) or (backdrop-filter: blur(24px))) {
+  .glass {
+    background-color: rgba(255, 249, 238, .93);
+    background-image: var(--noise-soft);
+  }
+}
