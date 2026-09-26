@@ -11,6 +11,7 @@ import (
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/api/meta"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/api/openai"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/catalog"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/console"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/httpx"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/gateway/model"
 	gwstore "github.com/ximo888ok-netizen/ximo-agent/internal/gateway/store"
@@ -149,6 +150,10 @@ func mountRoutes(
 	// /v1/auth/* 绝不能挂用户态鉴权：插件正是为了拿凭据才来调它们。只套限流
 	// （此时无 Principal，按客户端 IP 分桶），登录链因此不会被无限爆破。
 	routes = append(routes, limiter.LimitRoutes(meta.PublicRoutes(metaDeps))...)
+	// 管理控制台：静态页面本身不需要令牌（令牌由使用者在页面上输入，数据请求全部走
+	// 下面的 /admin/*，逐个请求校验）。它同时把 GET / 重定向到 /console/，避免直接
+	// 访问根路径得到 404。
+	routes = append(routes, console.Routes()...)
 
 	// --- 用户态：Bearer <API key 或 access token> -------------------------
 	userRoutes := make([]httpx.Route, 0, 8)

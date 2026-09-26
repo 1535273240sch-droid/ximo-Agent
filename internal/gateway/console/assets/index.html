@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XIMO 中转站 · 管理控制台</title>
+<link rel="stylesheet" href="/console/app.css">
+</head>
+<body>
+<div class="paper"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="seal">X</span>
+    <div>
+      <div class="brand-title">XIMO 中转站</div>
+      <div class="brand-sub">管理控制台</div>
+    </div>
+  </div>
+  <div class="conn">
+    <input id="token" type="password" placeholder="管理令牌（X-Admin-Token）" autocomplete="off">
+    <button id="connect" class="btn primary">连接</button>
+    <button id="forget" class="btn ghost" title="清除本机保存的令牌">忘记</button>
+    <span id="connState" class="chip">未连接</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="toc glass">
+    <ul class="toc-list">
+      <li><a href="#" data-page="overview" class="toc-link">一 概览</a></li>
+      <li><a href="#" data-page="device" class="toc-link">二 设备码批准</a></li>
+      <li><a href="#" data-page="users" class="toc-link">三 用户与额度</a></li>
+      <li><a href="#" data-page="keys" class="toc-link">四 API 密钥</a></li>
+      <li><a href="#" data-page="catalog" class="toc-link">五 模型与 Provider</a></li>
+      <li><a href="#" data-page="audit" class="toc-link">六 用量与审计</a></li>
+    </ul>
+    <div class="toc-foot">
+      <div id="verLine" class="tiny">版本 -</div>
+      <div class="tiny">令牌只存在本机浏览器，不外发</div>
+    </div>
+  </nav>
+
+  <section class="content">
+
+    <div id="page-overview" class="page glass">
+      <h2>概览</h2>
+      <p class="lede">中转站的整体状态：服务是否健康、有多少用户与模型、最近请求是否正常。</p>
+      <div class="grid">
+        <div class="card"><div class="k">服务</div><div class="v" id="ovHealth">-</div></div>
+        <div class="card"><div class="k">版本</div><div class="v" id="ovVersion">-</div></div>
+        <div class="card"><div class="k">用户数</div><div class="v" id="ovUsers">-</div></div>
+        <div class="card"><div class="k">模型数</div><div class="v" id="ovModels">-</div></div>
+        <div class="card"><div class="k">Provider 数</div><div class="v" id="ovProviders">-</div></div>
+        <div class="card"><div class="k">处于熔断</div><div class="v" id="ovUnhealthy">-</div></div>
+      </div>
+      <h3>接口一览</h3>
+      <p class="hint">给客户端（如 ximo-plugin）用的地址：<code id="gwHint">-</code></p>
+      <ul class="plain" id="ovEndpoints"></ul>
+    </div>
+
+    <div id="page-device" class="page glass" hidden>
+      <h2>设备码批准</h2>
+      <p class="lede">插件在客户机上执行 <code>login</code> 时会显示一个用户码，在这里批准它，插件才能拿到凭据。</p>
+      <div class="row">
+        <label>用户码<input id="devCode" placeholder="例如 7MEESR4S" autocomplete="off"></label>
+        <label>批准给谁
+          <select id="devUser"></select>
+        </label>
+        <button id="devApprove" class="btn primary">批准</button>
+        <button id="devReload" class="btn ghost">刷新用户列表</button>
+      </div>
+      <div id="devMsg" class="msg"></div>
+      <p class="hint">用户码区分大小写；有效期由服务端决定（通常几分钟）。插件端会每几秒轮询一次，批准后自动完成登录。</p>
+    </div>
+
+    <div id="page-users" class="page glass" hidden>
+      <h2>用户与额度</h2>
+      <p class="lede">建用户、看额度、充值或扣减。额度单位是微单位（1 credit = 1000000 微）。</p>
+      <div class="row">
+        <button id="uReload" class="btn ghost">刷新</button>
+        <input id="uName" placeholder="新用户名" autocomplete="off">
+        <input id="uPass" type="password" placeholder="初始密码" autocomplete="off">
+        <button id="uCreate" class="btn primary">建用户</button>
+      </div>
+      <div id="uMsg" class="msg"></div>
+      <table class="tbl" id="uTable">
+        <thead><tr><th>用户</th><th>状态</th><th>额度</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>充值 / 扣减</h3>
+      <div class="row">
+        <select id="qUser"></select>
+        <select id="qKind">
+          <option value="topup">充值 topup</option>
+          <option value="debit">扣减 debit</option>
+          <option value="freeze">冻结 freeze</option>
+          <option value="unfreeze">解冻 unfreeze</option>
+        </select>
+        <input id="qAmount" placeholder="数量（微单位）" value="1000000">
+        <input id="qReason" placeholder="原因">
+        <button id="qDo" class="btn primary">执行</button>
+      </div>
+      <div id="qMsg" class="msg"></div>
+      <h3>账本</h3>
+      <div class="row"><button id="qLedger" class="btn ghost">查看该用户账本</button></div>
+      <table class="tbl" id="lTable">
+        <thead><tr><th>时间</th><th>类型</th><th>金额</th><th>余额后</th><th>原因</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-keys" class="page glass" hidden>
+      <h2>API 密钥</h2>
+      <p class="lede">给用户签发密钥（只在签发时显示一次）。客户端用它与中转站通信。</p>
+      <div class="row">
+        <select id="kUser"></select>
+        <input id="kTtl" placeholder="有效期天数（可留空=不过期）">
+        <button id="kCreate" class="btn primary">签发</button>
+        <button id="kReload" class="btn ghost">刷新列表</button>
+      </div>
+      <div id="kMsg" class="msg"></div>
+      <div id="kOnce" class="once" hidden>
+        <div class="once-title">请立即复制，此密钥不会再次显示</div>
+        <code id="kOnceVal"></code>
+        <button id="kCopy" class="btn ghost">复制</button>
+      </div>
+      <table class="tbl" id="kTable">
+        <thead><tr><th>前缀</th><th>用户</th><th>状态</th><th>最后使用</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-catalog" class="page glass" hidden>
+      <h2>模型与 Provider</h2>
+      <p class="lede">先建 Provider（上游服务商与密钥），再把模型映射到它的上游模型名。</p>
+      <h3>Provider</h3>
+      <div class="row">
+        <input id="pId" placeholder="id（如 deepseek）">
+        <input id="pName" placeholder="名称">
+        <input id="pEp" placeholder="endpoint（如 https://api.deepseek.com/v1）" size="34">
+        <input id="pKey" type="password" placeholder="上游 API Key">
+        <button id="pCreate" class="btn primary">保存 Provider</button>
+        <button id="pReload" class="btn ghost">刷新</button>
+      </div>
+      <div id="pMsg" class="msg"></div>
+      <table class="tbl" id="pTable">
+        <thead><tr><th>id</th><th>名称</th><th>endpoint</th><th>状态</th><th>密钥引用</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>模型</h3>
+      <div class="row">
+        <input id="mId" placeholder="模型 id（对外）">
+        <input id="mName" placeholder="展示名">
+        <input id="mUpstream" placeholder="上游模型名（映射用）">
+        <select id="mProv"></select>
+        <input id="mCaps" placeholder='能力 JSON 如 {"stream":true,"tools":true}' value='{"stream":true,"tools":true}' size="30">
+        <button id="mCreate" class="btn primary">保存模型</button>
+      </div>
+      <div id="mMsg" class="msg"></div>
+      <table class="tbl" id="mTable">
+        <thead><tr><th>模型 id</th><th>展示名</th><th>启用</th><th>映射</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="page-audit" class="page glass" hidden>
+      <h2>用量与审计</h2>
+      <p class="lede">用量来自实际请求；审计记录所有管理侧写操作。</p>
+      <div class="row">
+        <label>按用户<select id="aUser"></select></label>
+        <button id="aUsage" class="btn ghost">刷新用量</button>
+        <button id="aAudit" class="btn ghost">刷新审计</button>
+      </div>
+      <div class="msg" id="aMsg"></div>
+      <h3>用量</h3>
+      <table class="tbl" id="usTable">
+        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>输入/输出</th><th>耗时</th><th>成本(微)</th><th>状态</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>审计</h3>
+      <table class="tbl" id="auTable">
+        <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>目标</th><th>结果</th><th>IP</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/console/app.js"></script>
+</body>
+</html>
