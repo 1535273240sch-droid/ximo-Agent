@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="referrer" content="no-referrer">
+<title>ximo-plugin · 羊皮卷控制台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main">跳到主内容</a>
+
+<!-- 羊皮纸噪点层：纯 data URI，不发起任何网络请求 -->
+<div class="paper-layer" aria-hidden="true"></div>
+
+<div class="app">
+
+  <aside class="toc glass" aria-label="目录">
+    <div class="toc-head">
+      <span class="seal" aria-hidden="true">X</span>
+      <span class="toc-brand">
+        <span class="toc-title">ximo-plugin</span>
+        <span class="toc-sub">羊皮卷控制台</span>
+      </span>
+    </div>
+
+    <nav aria-label="页面导航">
+      <ul class="toc-list">
+        <li><a class="toc-link" href="#detect" data-nav="detect"><span class="toc-num">一</span><span>检测</span></a></li>
+        <li><a class="toc-link" href="#connect" data-nav="connect"><span class="toc-num">二</span><span>连接网关</span></a></li>
+        <li><a class="toc-link" href="#models" data-nav="models"><span class="toc-num">三</span><span>模型</span></a></li>
+        <li><a class="toc-link" href="#apply" data-nav="apply"><span class="toc-num">四</span><span>应用</span></a></li>
+        <li><a class="toc-link" href="#doctor" data-nav="doctor"><span class="toc-num">五</span><span>体检</span></a></li>
+        <li><a class="toc-link" href="#adapters" data-nav="adapters"><span class="toc-num">六</span><span>适配器</span></a></li>
+      </ul>
+    </nav>
+
+    <div class="toc-foot">
+      <p class="mono tiny" id="env-line">正在读取状态…</p>
+    </div>
+  </aside>
+
+  <main class="main glass" id="main" tabindex="-1">
+
+    <header class="masthead">
+      <h1 class="masthead-title">把中转站接进任意 Agent</h1>
+      <p class="masthead-lede">
+        本界面只在本机回环地址上运行，静态资源全部内嵌，运行时不请求任何外部网络。
+        所改目标文件一律先备份、保留未知字段，并支持先看差异再落笔。
+      </p>
+    </header>
+
+    <section class="status-strip" aria-label="当前状态">
+      <h2 class="sr-only">当前状态</h2>
+      <ul class="chips" id="status-chips"></ul>
+    </section>
+
+    <div class="message" id="global-message" role="status" aria-live="polite" hidden></div>
+
+    <!-- ── 一 · 检测 ────────────────────────────────────────────── -->
+    <section class="page" id="page-detect" data-page="detect" hidden aria-labelledby="h-detect">
+      <h2 id="h-detect">检测</h2>
+      <p class="page-lede">
+        本机装了哪些 Agent、证据是什么。证据语义是 any-of：任意一条命中即算检测到，
+        未命中的条目只作为排查线索。
+      </p>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" data-action="detect-refresh">重新检测</button>
+        <span class="hint" id="detect-hint" aria-live="polite"></span>
+      </div>
+      <div class="cards" id="detect-list"></div>
+    </section>
+
+    <!-- ── 二 · 连接网关 ─────────────────────────────────────────── -->
+    <section class="page" id="page-connect" data-page="connect" hidden aria-labelledby="h-connect">
+      <h2 id="h-connect">连接网关</h2>
+      <p class="page-lede">
+        用设备码登录：点「开始设备码登录」拿到用户码，在验证地址里输入即可。
+        界面全程只显示掩码后的凭据，明文密钥不会出现在本页任何位置。
+      </p>
+
+      <h3>当前配置</h3>
+      <dl class="kv" id="connect-kv"></dl>
+      <div class="toolbar">
+        <button type="button" class="btn btn-quiet" data-action="connect-refresh">刷新状态</button>
+      </div>
+
+      <h3>设备码登录</h3>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" data-action="login-start">开始设备码登录</button>
+        <button type="button" class="btn btn-quiet" data-action="login-poll" hidden>立即轮询一次</button>
+        <button type="button" class="btn btn-quiet" data-action="login-stop" hidden>停止轮询</button>
+      </div>
+
+      <div class="confirm-box" id="login-panel" hidden>
+        <p class="label">在验证页面输入这个用户码</p>
+        <p class="user-code mono" id="login-code"></p>
+        <div class="toolbar">
+          <button type="button" class="btn btn-quiet" data-action="copy-code">复制用户码</button>
+          <a class="btn btn-quiet" id="login-verify" target="_blank" rel="noopener noreferrer" hidden>打开验证地址</a>
+        </div>
+        <p class="hint" id="login-status" aria-live="polite"></p>
+      </div>
+
+      <div class="note">
+        <p class="note-title">为什么看不到明文？</p>
+        <p>
+          本界面不提供显示明文密钥的开关。设备码登录只会把令牌写进本机 0600 权限的凭据文件，
+          页面上永远只有 <span class="mono">前4位****后4位</span> 的掩码形式；确需真值请用
+          <span class="mono">ximo-plugin print-env</span> 之类的一次性 CLI 命令。
+        </p>
+      </div>
+    </section>
+
+    <!-- ── 三 · 模型 ────────────────────────────────────────────── -->
+    <section class="page" id="page-models" data-page="models" hidden aria-labelledby="h-models">
+      <h2 id="h-models">模型</h2>
+      <p class="page-lede">
+        网关 <span class="mono">GET /v1/models</span> 返回的可用模型（服务端已只返回已启用的）。
+        需要先登录，否则接口会直接报错而不是返回空列表。
+      </p>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" data-action="models-refresh">刷新模型</button>
+        <span class="hint" id="models-hint" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="ledger" id="models-table">
+          <caption class="sr-only">网关可用模型列表</caption>
+          <thead>
+            <tr>
+              <th scope="col">模型 ID</th>
+              <th scope="col">展示名</th>
+              <th scope="col">Provider</th>
+              <th scope="col">入站协议</th>
+              <th scope="col">能力</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="empty" id="models-empty" hidden></div>
+    </section>
+
+    <!-- ── 四 · 应用 ────────────────────────────────────────────── -->
+    <section class="page" id="page-apply" data-page="apply" hidden aria-labelledby="h-apply">
+      <h2 id="h-apply">应用</h2>
+      <p class="page-lede">
+        先选适配器与模型生成计划（不落盘），读完差异再确认写入。写入前会备份原文件，
+        并保留其中的未知字段。
+      </p>
+
+      <form class="form" id="apply-form" autocomplete="off">
+        <div class="field">
+          <label for="apply-spec">适配器</label>
+          <select id="apply-spec" required></select>
+          <p class="hint" id="apply-spec-hint"></p>
+        </div>
+
+        <div class="field">
+          <label for="apply-model">模型</label>
+          <select id="apply-model"></select>
+          <p class="hint" id="apply-model-hint">留空表示由网关挑第一个可用模型。</p>
+          <label class="check" for="apply-model-text-on">
+            <input type="checkbox" id="apply-model-text-on">
+            <span>手动输入模型 id</span>
+          </label>
+          <input type="text" id="apply-model-text" class="mono" placeholder="例如 gpt-4o-mini" hidden spellcheck="false">
+        </div>
+
+        <div class="field">
+          <label for="apply-key">API Key（可选）</label>
+          <input type="password" id="apply-key" autocomplete="new-password" spellcheck="false"
+                 placeholder="留空则使用本机已保存的凭据">
+          <p class="hint">
+            只随本次请求提交，读完立即从输入框清除，界面上只会出现掩码；
+            留空时后端会回退到本机凭据文件。
+          </p>
+        </div>
+
+        <div class="toolbar">
+          <button type="submit" class="btn btn-primary">生成差异预览</button>
+          <button type="button" class="btn btn-quiet" data-action="apply-clear">清空</button>
+          <span class="hint" id="apply-hint" aria-live="polite"></span>
+        </div>
+      </form>
+
+      <div class="panel" id="apply-plan" hidden>
+        <h3>待写计划（尚未落盘）</h3>
+        <ol class="steps" id="apply-steps"></ol>
+
+        <h3>差异预览</h3>
+        <p class="hint">
+          <span class="diff-key diff-key-add">+</span> 为新增或修改后的行，
+          <span class="diff-key diff-key-del">-</span> 为原有内容；差异文本已由后端掩码。
+        </p>
+        <pre class="diff mono" id="apply-diff" tabindex="0" aria-label="差异预览"></pre>
+
+        <div class="toolbar confirm-row">
+          <label class="check" for="apply-confirm">
+            <input type="checkbox" id="apply-confirm">
+            <span>我已核对上述差异，确认写入</span>
+          </label>
+          <button type="button" class="btn btn-danger" data-action="apply-exec" disabled>写入</button>
+        </div>
+      </div>
+
+      <div class="panel" id="apply-results" hidden>
+        <h3>执行结果</h3>
+        <ul class="results" id="apply-results-list"></ul>
+      </div>
+    </section>
+
+    <!-- ── 五 · 体检 ────────────────────────────────────────────── -->
+    <section class="page" id="page-doctor" data-page="doctor" hidden aria-labelledby="h-doctor">
+      <h2 id="h-doctor">体检</h2>
+      <p class="page-lede">
+        逐项检查适配器规格、本机 Agent、凭据文件权限、配置里写入的凭据类型与网关连通性。
+        WARN 是需要留意的提示，FAIL 必须处理。
+      </p>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" data-action="doctor-refresh">重新体检</button>
+        <span class="hint" id="doctor-summary" aria-live="polite"></span>
+      </div>
+      <ul class="checks" id="doctor-list"></ul>
+    </section>
+
+    <!-- ── 六 · 适配器 ──────────────────────────────────────────── -->
+    <section class="page" id="page-adapters" data-page="adapters" hidden aria-labelledby="h-adapters">
+      <h2 id="h-adapters">适配器</h2>
+      <p class="page-lede">
+        适配器就是一份 JSON 规格：把中转站地址与凭据映射到某个 Agent 的配置文件或环境变量。
+        下面展示内置规格的全文，可作为新增 Agent 的模板。
+      </p>
+
+      <div class="note">
+        <p class="note-title">新增一个 Agent：复制一份 JSON 放到 <span class="mono">~/.ximo-plugin/specs/</span> 即可</p>
+        <ol class="note-list">
+          <li>挑一份最像的内置规格复制出来，存成 <span class="mono">~/.ximo-plugin/specs/&lt;你的 id&gt;.json</span>。</li>
+          <li><strong>文件名必须与 <span class="mono">id</span> 相同</strong>，否则加载直接报错（防手滑）。</li>
+          <li>同 ID 会<strong>整体替换</strong>内置规格（不做字段级合并）；写错字段名、路径含 <span class="mono">..</span>、缺 <span class="mono">restart_note</span> 等会在校验期一次列出全部问题。</li>
+          <li>改完回到「检测」页点「重新检测」，或直接跑 <span class="mono">ximo-plugin adapters list</span> 验证。</li>
+        </ol>
+        <p class="hint">
+          不确定第三方 schema 时不要在 JSON 里猜字段名 —— 把字段省掉、在
+          <span class="mono">description</span> 里写明「需用户确认路径」，比写错要安全。
+        </p>
+      </div>
+
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" data-action="specs-refresh">刷新规格</button>
+        <span class="hint" id="specs-hint" aria-live="polite"></span>
+      </div>
+      <div class="cards" id="spec-list"></div>
+    </section>
+
+  </main>
+</div>
+
+<noscript>
+  <div class="noscript">本界面需要启用 JavaScript 才能读取本地接口。</div>
+</noscript>
+
+<script src="/assets/app.js" defer></script>
+</body>
+</html>

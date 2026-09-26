@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,9 @@ import (
 	"github.com/ximo888ok-netizen/ximo-agent/internal/config"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/ipc"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/ipcapi"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/storage"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/storage/migrations"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/storage/sqlite"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/supervisor"
 )
 
@@ -34,6 +38,7 @@ func main() {
 		ipcEndpointFlag string
 		showVersion     bool
 		healthCheck     bool
+		migrateOnly     bool
 	)
 
 	flag.StringVar(&roleFlag, "role", "supervisor", "process role: supervisor | ui | engine | worker")
@@ -42,6 +47,7 @@ func main() {
 	flag.StringVar(&ipcEndpointFlag, "ipc-endpoint", "", "ipc endpoint address (named pipe or unix domain socket)")
 	flag.BoolVar(&showVersion, "version", false, "display version and build information")
 	flag.BoolVar(&healthCheck, "health", false, "run version health check (used by upgrade scripts)")
+	flag.BoolVar(&migrateOnly, "migrate-only", false, "open the database, apply pending migrations, then exit 0 (used by upgrade scripts)")
 
 	flag.Parse()
 
@@ -67,6 +73,16 @@ func main() {
 	}
 	if configPath != "" {
 		log.Printf("[CONFIG] Loaded configuration from %s", configPath)
+	}
+
+	// 迁移专用模式：打开库 → 应用迁移 → 退出，不启动 IPC、不常驻。
+	//
+	// 刻意放在角色分发之前：release/upgrade.ps1 与 release/upgrade.sh 的调用形式是
+	// `ximo-agent --role=engine --migrate-only`，角色不应影响迁移的语义。
+	// 也刻意放在配置加载之后：升级脚本要迁移的必须是这个进程真正会用的那个库
+	// （含 <BaseDir>/config.json 里 storage.db_path 的覆盖）。
+	if migrateOnly {
+		os.Exit(runMigrateOnly(cfg))
 	}
 
 	endpoint := ipcEndpointFlag
@@ -98,6 +114,112 @@ func main() {
 	default:
 		log.Fatalf("[FATAL] Unknown role: %s", roleFlag)
 	}
+}
+
+// runMigrateOnly 执行「打开库 → 应用迁移 → 退出」，返回进程退出码（0 成功，
+// 1 失败）。这个退出码就是 release/upgrade.ps1:84 与 release/upgrade.sh:79
+// 第 4 步的判定依据——失败时脚本会删掉新版本目录并回滚，因此必须如实反映。
+//
+// 它复用启动时的同一条迁移路径，而不是自带一份迁移实现：
+//   - 打开库用 bootstrap.New 用的同一个门面（storage.Open + sqlite.DefaultConfig）；
+//   - 执行迁移用 internal/storage/migrations.ApplyFromDir——正是
+//     internal/bootstrap 的 applyMigrations 内部调用的那一个函数。
+//
+// 唯一没有直接复用的是「迁移目录探测顺序」与「sqlite 档位解析」：这两个函数
+// （bootstrap.defaultMigrationDirs / bootstrap.parseProfile）在该包里未导出，
+// 而 internal/bootstrap 不在本任务的文件所有权范围内（契约把它列为共享只读）。
+// 下面两份镜像刻意与它们逐字对齐，改动上游时需同步。
+//
+// 本函数不启动 IPC 服务端、不装配 Engine、不常驻：库打开后立即释放。
+func runMigrateOnly(cfg *config.Config) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := cfg.Paths.EnsureDirectories(); err != nil {
+		log.Printf("[MIGRATE] Ensure directories failed: %v", err)
+		return 1
+	}
+
+	dbPath := cfg.ResolveDBPath()
+	dbCfg := sqlite.DefaultConfig(dbPath)
+	dbCfg.Profile = storageProfile(cfg.Storage.Profile)
+	store, err := storage.Open(dbCfg)
+	if err != nil {
+		log.Printf("[MIGRATE] Open database %s failed: %v", dbPath, err)
+		return 1
+	}
+	defer func() { _ = store.Close() }()
+
+	dir, err := resolveMigrationsDir()
+	if err != nil {
+		log.Printf("[MIGRATE] %v", err)
+		return 1
+	}
+
+	applied, err := migrations.ApplyFromDir(ctx, store.DB(), dir)
+	if err != nil {
+		log.Printf("[MIGRATE] Apply migrations from %s failed: %v", dir, err)
+		return 1
+	}
+
+	version, err := migrations.NewRunner(store.DB()).CurrentVersion(ctx)
+	if err != nil {
+		log.Printf("[MIGRATE] Read schema version failed: %v", err)
+		return 1
+	}
+
+	log.Printf("[MIGRATE] Database %s ready: schema version %d (applied %v this run, dir=%s)",
+		dbPath, version, applied, dir)
+	return 0
+}
+
+// storageProfile 把配置里的档位名映射成 PRAGMA 档位，与
+// internal/bootstrap 的 parseProfile 逐字一致（含未知值回落 balanced）。
+//
+// 档位只影响连接级 PRAGMA（synchronous / busy_timeout / 读连接数），不写入
+// 库文件，因此这里选档不影响迁移产物；之所以仍然对齐，是为了让
+// --migrate-only 与引擎的打开方式保持一致，避免"两套打开方式"的心智负担。
+func storageProfile(name string) sqlite.Profile {
+	switch name {
+	case "safe":
+		return sqlite.ProfileSafe
+	case "performance":
+		return sqlite.ProfilePerformance
+	default:
+		return sqlite.ProfileBalanced
+	}
+}
+
+// resolveMigrationsDir 返回第一个实际存在的迁移脚本目录。
+func resolveMigrationsDir() (string, error) {
+	candidates := migrationDirCandidates()
+	for _, dir := range candidates {
+		if dir == "" {
+			continue
+		}
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		return dir, nil
+	}
+	return "", fmt.Errorf("no migrations directory found (looked in %v)", candidates)
+}
+
+// migrationDirCandidates 与 internal/bootstrap 的 defaultMigrationDirs 顺序一致：
+// 可执行文件同级 → ./migrations → ../migrations → ../../migrations，
+// 覆盖「随二进制分发」（dist/ximo-agent.exe + dist/migrations）与
+// 「从仓库根或子目录运行」两种形态。
+func migrationDirCandidates() []string {
+	var out []string
+	if exe, err := os.Executable(); err == nil {
+		out = append(out, filepath.Join(filepath.Dir(exe), "migrations"))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		out = append(out, filepath.Join(wd, "migrations"))
+		out = append(out, filepath.Join(wd, "..", "migrations"))
+		out = append(out, filepath.Join(wd, "..", "..", "migrations"))
+	}
+	return out
 }
 
 func runSupervisor(cfg *config.Config, endpoint string) {

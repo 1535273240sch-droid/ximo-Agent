@@ -184,6 +184,15 @@ type StreamChunk struct {
 	ToolCalls []ToolCallDelta
 	// Usage 结束时上报（仅当服务商支持 sendStreamUsage）。
 	Usage *TokenUsage
+	// FinishReason 上游显式报告的结束原因；空 = 上游整条流都没报，调用方需自行推断。
+	//
+	// 上游报出结束原因时，本层会单独发一条**只带该字段**的分片（在最后一个内容分片
+	// 之后、Done 之前），供网关决定响应里的 stop_reason —— 否则「被 max_tokens
+	// 截断」这类信息只能靠输出长度去猜。
+	//
+	// 这里刻意不做「有工具调用即 tool_calls」的归一：归一属于非流式聚合结果的口径
+	// （见 resolveFinishReason），用在分片里会覆盖上游明确报告的 stop/length。
+	FinishReason FinishReason
 	// Done 流结束标志；结束时必定发送且为最后一个分片。
 	Done bool
 	// Err 终止错误；与 Done 同时出现。

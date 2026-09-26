@@ -1,0 +1,16 @@
+{
+  "id": "continue",
+  "name": "Continue",
+  "description": "Continue（VS Code / JetBrains 扩展）。模型配置在扩展配置目录 ~/.continue 下，其 config.yaml（新版）与 config.json（旧版）的字段 schema 本项目未核实，因此只给通用 OpenAI 兼容环境变量形态；路径/schema 需用户确认。",
+  "docs": "https://docs.continue.dev/",
+  "detect": {
+    "paths": ["~/.continue"]
+  },
+  "env": {
+    "base_url": "OPENAI_BASE_URL",
+    "api_key": "OPENAI_API_KEY",
+    "style": "export"
+  },
+  "restart_note": "改完需重启 IDE 窗口（Reload Window），扩展才会重新读配置/环境变量。",
+  "protocols": ["openai-chat"]
+}

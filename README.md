@@ -129,6 +129,43 @@ ximo-agent.exe --health
 
 可用 `XIMO_SECRETS_BACKEND` 强制指定：`dpapi` / `cred`。绝无明文存储降级。
 
+### 长期记忆（mem0）
+
+引擎可接入 [mem0](https://github.com/mem0ai/mem0)（Apache-2.0）做跨会话长期记忆：
+每次 run 开始前自动召回相关记忆注入上下文，run 结束后自动把这一轮问答交给 mem0 抽取。
+默认**关闭**；未启用或服务不可用时整条链路静默降级，请求与行为跟没有该特性时逐字节一致。
+
+```cmd
+scripts\mem0\mem0-up.cmd          REM 起 mem0 服务（需 Docker Desktop，版本已固定）
+```
+
+```jsonc
+{
+  "feature_flags": { "memory.mem0": true },
+  "memory": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:8888",   // 8888 = API；3000 是 dashboard，不代理 /memories、/search
+    "secret_ref": "",            // 指向凭据库中的 mem0 API Key，不留明文
+    "user_id": "ximo-user",      // 记忆归属：跨会话共享的就是这一维度
+    "top_k": 5,
+    "recall_max_chars": 1200,
+    "write_back": true,          // 省略即开启；不要靠零值判断
+    "timeout": 700000000         // 纳秒。召回给每个 run 额外带来的等待上限
+  }
+}
+```
+
+记忆以**独立 system 消息**插在稳定系统提示词之后（不破坏 prompt cache 前缀，也不
+影响 `PrefixShape` 诊断）；模型还可主动调用 `memory` 工具做检索/写入/浏览/遗忘。
+
+> ⚠️ 起栈后必须在 mem0 侧单独配置**向量模型**：DeepSeek 没有 embeddings 接口，
+> 需要本地 Ollama、硅基流动或 DashScope 之类。这一步没配好，表现是「记忆写进去了
+> 但召回不到」。
+
+完整说明（部署两条路径、REST 契约、排障与运行时计数、已知边界）见
+[`docs/长期记忆-mem0.md`](docs/长期记忆-mem0.md)；后端安装与启停见
+[`scripts/mem0/README.md`](scripts/mem0/README.md)。
+
 ---
 
 ## 验证
@@ -210,3 +247,57 @@ release/                 升级与回滚脚本
 ## 许可
 
 见 `LICENSE`。
+
+---
+
+## 中转站网关与通用插件
+
+除 Agent 运行时外，本仓库还交付两个可独立使用的工具，外加一项引擎侧特性：
+
+| 交付物 | 一句话定位 |
+|---|---|
+| `ximo-gateway`（`cmd/ximo-gateway`） | 本仓库自带的**服务端中转站**：把多个上游服务商收口成一套账号 / API Key / 额度账本 / 用量 / 审计，对外提供 OpenAI 兼容（`/v1/chat/completions`）与 Anthropic 兼容（`/v1/messages`）入口 |
+| `ximo-plugin`（独立 module `plugin/`） | **独立、通用**的 CLI **+ 本地界面**：把任意 OpenAI / Anthropic 兼容的中转站接进本机已装好的 Agent（Claude Code、Codex CLI、Continue、Cursor、aider、XIMO Agent 等），产物是单个静态二进制。本地界面 `ximo-plugin ui`（**玻璃质感 + 羊皮卷**风格，只绑回环地址、带会话令牌） |
+| mem0 长期记忆（`internal/memory/**`） | 引擎侧特性：跨会话召回与写回，与上面两者无依赖关系（见上节「长期记忆（mem0）」） |
+
+三者关系：`ximo-plugin` 是**客户端**，指向 `ximo-gateway`（或任何兼容中转站）；`ximo-gateway` 是**服务端**，自身与 mem0 无关。`ximo-plugin` 是独立 Go module（`github.com/1535273240sch-droid/ximo-plugin`），**不 import 主仓库任何 `internal/**`**，可单独编译后拷到别的机器上用。
+
+### 最小快速开始
+
+```bash
+# 服务端：编译 + 启动（默认只绑回环 127.0.0.1:8600；管理口令无默认值，缺失则启动失败退出 2）
+go build -o ximo-gateway.exe ./cmd/ximo-gateway
+export XIMO_GATEWAY_ADMIN_TOKEN='<你自己生成的强口令>'
+./ximo-gateway.exe --db ./gw.db
+# 只跑迁移然后退出：./ximo-gateway.exe --db ./gw.db --migrate-only
+
+# 客户端：独立 module，单独编译
+cd plugin
+go build -o ximo-plugin.exe ./cmd/ximo-plugin
+./ximo-plugin.exe doctor --gateway http://127.0.0.1:8600    # 逐项体检；有 FAIL 时退出码 1
+./ximo-plugin.exe login  --gateway http://127.0.0.1:8600    # 设备码登录（用户码在网关侧授权）
+./ximo-plugin.exe models --gateway http://127.0.0.1:8600
+./ximo-plugin.exe apply  --gateway http://127.0.0.1:8600 --spec ximo-agent --dry-run
+./ximo-plugin.exe apply  --gateway http://127.0.0.1:8600 --spec ximo-agent --yes
+
+# 本地界面（玻璃质感 + 羊皮卷风格）：只绑 127.0.0.1，静态资源已嵌进二进制
+./ximo-plugin.exe ui --gateway http://127.0.0.1:8600          # 默认 127.0.0.1:8787，并尝试打开浏览器
+./ximo-plugin.exe ui --no-open --port 8787                    # 不自动开浏览器，只打印带会话令牌的地址
+```
+
+`ui` 的实际参数就是 `[--port 8787] [--no-open] [--gateway <url>]`（外加全局 `--home <dir>`，用于隔离家目录）。启动后会打印形如 `http://127.0.0.1:8787/?t=<本次会话令牌>` 的地址：**所有 `/api/*` 请求都必须带 `X-UI-Token`，不带就是 401**（防止本机其它程序驱动插件改配置）；令牌不写日志，界面里也不落明文密钥、不提供 `--show-secrets` 的等价开关（要看真值用 CLI）。上方五条 CLI 命令与这个界面走的是**同一套** `plugin/internal/**` 实现。
+
+建用户、充值、配上游 provider、发 API Key 这些**管理侧**动作，以及设备码授权全流程，见 [`docs/XIMO中转站-V1.md`](docs/XIMO中转站-V1.md) §2.3 的 curl 逐条示例。
+
+### 现状声明（照实写）
+
+- 单机 SQLite（单进程单写者），**未接 Redis / NATS**；限流、熔断都在进程内。
+- **无真实价目表**：`--price-micro-per-ktok` 是全局占位单价，计费金额**不可作为账单**。
+- 监听地址**默认只绑回环**（`127.0.0.1:8600`），要对外必须显式改 `--addr`。
+- 管理口令与上游密钥都不落明文：口令只有 PBKDF2 哈希，上游密钥只存 `internal/secrets` 的引用。
+
+### 文档
+
+- 中转站：[`docs/XIMO中转站-V1.md`](docs/XIMO中转站-V1.md)（接口清单、差异表、已知缺陷与未做项）
+- 插件：[`plugin/docs/README.md`](plugin/docs/README.md)、[`plugin/docs/QUICKSTART.md`](plugin/docs/QUICKSTART.md)
+- 长期记忆：[`docs/长期记忆-mem0.md`](docs/长期记忆-mem0.md)

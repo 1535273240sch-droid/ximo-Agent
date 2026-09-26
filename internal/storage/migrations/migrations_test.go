@@ -3,6 +3,7 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,74 @@ func repoMigrations(t *testing.T) fstest.MapFS {
 	return m
 }
 
+// assertContiguousVersions 断言「已应用版本」这条不变量：从 1 开始逐项 +1、
+// 无空洞，并返回本次应用到的最高版本。
+func assertContiguousVersions(t *testing.T, applied []int) int {
+	t.Helper()
+	last, err := checkContiguousVersions(applied)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return last
+}
+
+// checkContiguousVersions 是纯函数形式的不变量校验，便于用合成输入做反向控制
+// （见 TestCheckContiguousVersions）——证明这些断言不是"随便多少都过"的空断言。
+//
+// 为什么不写死条数：迁移文件会合法地增加（migrations/0003_gateway.sql 就是
+// 这样加进来的），把「恰好两版」写进断言等于每次新增迁移都会打破仓库验收门。
+// 但下限仍然硬性要求 0001 与 0002 已被应用，且顺序与连续性逐项校验。
+func checkContiguousVersions(applied []int) (int, error) {
+	if len(applied) < 2 {
+		return 0, fmt.Errorf("applied = %v, want at least the two existing versions [1 2]", applied)
+	}
+	if applied[0] != 1 || applied[1] != 2 {
+		return 0, fmt.Errorf("applied = %v, want the first two versions to be [1 2]", applied)
+	}
+	for i, v := range applied {
+		if v != i+1 {
+			return 0, fmt.Errorf("applied = %v: index %d holds %d, want %d (versions must be contiguous from 1)",
+				applied, i, v, i+1)
+		}
+	}
+	return applied[len(applied)-1], nil
+}
+
+// TestCheckContiguousVersions 是上面那条不变量的反向控制：合规的输入必须通过，
+// 少一版、跳号、倒序、重复、不以 1 起始都必须被拒。
+func TestCheckContiguousVersions(t *testing.T) {
+	for _, want := range []int{2, 3, 4, 9} {
+		in := make([]int, want)
+		for i := range in {
+			in[i] = i + 1
+		}
+		got, err := checkContiguousVersions(in)
+		if err != nil {
+			t.Errorf("checkContiguousVersions(%v) = %v, want nil", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("checkContiguousVersions(%v) = %d, want %d", in, got, want)
+		}
+	}
+
+	reject := map[string][]int{
+		"empty":            nil,
+		"single":           {1},
+		"missing floor":    {2, 3},
+		"gap":              {1, 2, 4},
+		"duplicate":        {1, 2, 2},
+		"starts at zero":   {0, 1, 2},
+		"out of order":     {2, 1},
+		"extra floor hole": {1, 3},
+	}
+	for name, in := range reject {
+		if last, err := checkContiguousVersions(in); err == nil {
+			t.Errorf("%s: checkContiguousVersions(%v) = %d, want an error", name, in, last)
+		}
+	}
+}
+
 func TestApplyFromRepoMigrations(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -57,16 +126,14 @@ func TestApplyFromRepoMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(applied) != 2 || applied[0] != 1 || applied[1] != 2 {
-		t.Fatalf("applied = %v, want [1 2]", applied)
-	}
+	last := assertContiguousVersions(t, applied)
 
 	cur, err := r.CurrentVersion(ctx)
 	if err != nil {
 		t.Fatalf("CurrentVersion: %v", err)
 	}
-	if cur != 2 {
-		t.Errorf("current version = %d, want 2", cur)
+	if cur != last {
+		t.Errorf("current version = %d, want %d (the highest applied version)", cur, last)
 	}
 
 	// Repeated Apply is idempotent.
@@ -91,8 +158,8 @@ func TestApplyFromRepoMigrations(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
 		t.Fatalf("user_version: %v", err)
 	}
-	if userVersion != 2 {
-		t.Errorf("user_version = %d, want 2", userVersion)
+	if userVersion != last {
+		t.Errorf("user_version = %d, want %d (same as the registry's current version)", userVersion, last)
 	}
 
 	// Registry row content.
@@ -225,9 +292,8 @@ func TestApplyFromDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyFromDir: %v", err)
 	}
-	if len(applied) != 2 {
-		t.Fatalf("applied = %v, want [1 2]", applied)
-	}
+	// 同 TestApplyFromRepoMigrations：断言不变量而非固定条数。
+	assertContiguousVersions(t, applied)
 }
 
 // TestToolIdempotencyTableIsOwnedBy03 guards 08 ruling D-5: the

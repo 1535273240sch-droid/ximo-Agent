@@ -37,9 +37,24 @@
     "checkpoint.cas": true,
     "context.v2": true,
     "engine.v2": true,
+    "memory.mem0": false,
     "scheduler.v2": true,
     "worker.browser": true,
     "worker.dynamic_js": true,
     "worker.mcp": true
+  },
+  "memory": {
+    "enabled": false,
+    "endpoint": "http://127.0.0.1:8888",
+    "secret_ref": "",
+    "user_id": "ximo-user",
+    "agent_id": "ximo-agent",
+    "top_k": 5,
+    "recall_max_chars": 1200,
+    "write_back": true,
+    "timeout": 700000000,
+    "extract_timeout": 30000000000,
+    "queue_depth": 32,
+    "max_inflight": 2
   }
 }

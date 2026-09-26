@@ -12,6 +12,7 @@ import (
 	ctxmgr "github.com/ximo888ok-netizen/ximo-agent/internal/context"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/engine"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/expert"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/memory"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/observability"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/ports"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/provider"
@@ -24,6 +25,7 @@ import (
 	"github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/file"
 	gitdomain "github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/git"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/knowledge"
+	memorytool "github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/memory"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/web"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/types"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/worker"
@@ -44,6 +46,9 @@ type App struct {
 	store   *storage.Store
 	workers *worker.Manager
 	secrets *secrets.Manager
+	// memorySvc 是长期记忆（mem0）服务，未启用时为 nil。引擎通过适配器使用它，
+	// memory 工具直接用同一个实例，两者共用同一组有界回填 worker。
+	memorySvc *memory.Service
 
 	// cfg 是本次装配使用的配置。界面修改配置时需要它作为基准。
 	cfg *config.Config
@@ -166,6 +171,11 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 		}
 	}
 
+	// --- 5.5 长期记忆（mem0，可选）------------------------------------------
+	// 必须早于工具运行时：memory 工具要在同一个注册表里注册，且它与引擎共用
+	// 同一个服务实例（也就是同一组有界回填 worker）。
+	app.memorySvc = buildMemoryService(cfg, app, db)
+
 	// --- 6. 工具运行时（含 Worker 工具桥接）----------------------------------
 	tools, idemStore, err := buildToolRuntime(cfg, opts, app, db)
 	if err != nil {
@@ -186,6 +196,9 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 		Tools:       tools,
 		Provider:    holder,
 		Context:     newContextAdapter(ctxmgr.NewContextManager(ctxmgr.ContextManagerOptions{})),
+		// 长期记忆：nil（未启用）时引擎的召回与回填都退化成 no-op，
+		// 行为与本特性不存在时完全一致。
+		Memory: memoryAdapter{svc: app.memorySvc},
 		// 任务 05：engine 内的专家直连路径（用户手选专家）与 agent_expert 工具
 		// 路径（App.ExpertOrchestrator）共用同一个子代理模型池与候选分配。池是
 		// 懒构造 + 配置变更失效重建的，所以这里给取池函数而不是池本身。
@@ -228,6 +241,11 @@ func (a *App) Close() {
 		_ = a.workers.Stop(ctx)
 		cancel()
 		a.workers = nil
+	}
+	if a.memorySvc != nil {
+		// 它是幂等的，且有界等待（最多一个 extract_timeout）。
+		a.memorySvc.Close()
+		a.memorySvc = nil
 	}
 	if a.store != nil {
 		_ = a.store.Close()
@@ -420,6 +438,20 @@ func buildToolRuntime(cfg *config.Config, opts Options, app *App, db *sqlite.DB)
 	}
 	if err := registry.Register(web.New()); err != nil {
 		return nil, nil, fmt.Errorf("register web tool: %w", err)
+	}
+	// 长期记忆工具：与引擎共用同一个服务实例。未启用（app.memorySvc 为 nil）时
+	// 依然注册：工具会返回「长期记忆未启用、去 config.json 的哪一段开」的明确
+	// 说明，而不是从工具列表里消失——这样模型看到的能力清单是稳定的，用户说
+	// 「记住这个」时也能听到真正的原因。
+	// 只在服务非 nil 时才赋给接口变量：直接传一个 (*memory.Service)(nil) 会让
+	// 接口本身非空，工具于是走「后端报错」分支，而不是给出「未启用 + 去哪开」
+	// 这段对用户真正有用的说明。
+	var memoryBackend memorytool.Backend
+	if app != nil && app.memorySvc != nil {
+		memoryBackend = app.memorySvc
+	}
+	if err := registry.Register(memorytool.New(memoryBackend)); err != nil {
+		return nil, nil, fmt.Errorf("register memory tool: %w", err)
 	}
 
 	// Worker 池工具（browser / terminal / office / dynamic-js / mcp / computer-use）。

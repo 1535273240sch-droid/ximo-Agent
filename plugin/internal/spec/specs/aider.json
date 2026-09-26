@@ -1,0 +1,17 @@
+{
+  "id": "aider",
+  "name": "aider",
+  "description": "aider（命令行结对编程）。认 OPENAI_API_BASE / OPENAI_API_KEY 环境变量，也接受 OPENAI_BASE_URL（两者择一即可）。~/.aider.conf.yml 的完整 schema 本项目未核实，故不提供 files 目标；路径/schema 需用户确认。",
+  "docs": "https://aider.chat/docs/config/options.html",
+  "detect": {
+    "binaries": ["aider"],
+    "paths": ["~/.aider.conf.yml"]
+  },
+  "env": {
+    "base_url": "OPENAI_API_BASE",
+    "api_key": "OPENAI_API_KEY",
+    "style": "export"
+  },
+  "restart_note": "需重开终端（或重新 source 配置）后再运行 aider。",
+  "protocols": ["openai-chat"]
+}

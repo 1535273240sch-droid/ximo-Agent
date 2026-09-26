@@ -735,7 +735,7 @@ func DefaultRisk(toolName, action string) RiskLevel {
 // DefaultPermissionConfigs 返回 v1 三套模式配置的 v2 版本。
 // YOLO/Safe/Off 三档通过 autoModeLevel 叠加在 Mode 上（由调用方选择 config）。
 func DefaultPermissionConfigs() map[Mode]PermissionConfig {
-	return map[Mode]PermissionConfig{
+	configs := map[Mode]PermissionConfig{
 		ModeYolo: {DefaultDecision: EffectAllow},
 		ModeSafe: {
 			Ask:             []Rule{{ID: "safe:file_delete", Tool: "file_delete", Effect: EffectAsk, Description: "删除文件需确认"}},
@@ -811,5 +811,42 @@ func DefaultPermissionConfigs() map[Mode]PermissionConfig {
 			},
 			DefaultDecision: EffectAsk,
 		},
+	}
+	applyMemoryRules(configs)
+	return configs
+}
+
+// applyMemoryRules 给各交互模式补上长期记忆（memory）工具的规则。
+//
+// 单独一个函数而不是在每个模式字面量里重复一遍：memory 的读/写分档在所有模式里
+// 完全一致，重复四份只会让后来改规则的人漏掉其中一处。yolo / safe 的默认决策是
+// 放行，本工具在那两档天然可用，因此这里只需要收紧 coding / office。
+//
+// 分档理由：search / list 只读远端记忆，不改变任何状态 → 放行；add / forget 会
+// 改写长期记忆（影响之后每一次对话的上下文），属于「用户会想知道」的写操作 → 确认。
+func applyMemoryRules(configs map[Mode]PermissionConfig) {
+	read := func(prefix string) []Rule {
+		return []Rule{
+			{ID: prefix + ":memory:search", Tool: "memory", Action: "search", Effect: EffectAllow},
+			{ID: prefix + ":memory:list", Tool: "memory", Action: "list", Effect: EffectAllow},
+		}
+	}
+	write := func(prefix string) []Rule {
+		return []Rule{
+			{ID: prefix + ":memory:add", Tool: "memory", Action: "add", Effect: EffectAsk, Description: "写入长期记忆需确认"},
+			{ID: prefix + ":memory:forget", Tool: "memory", Action: "forget", Effect: EffectAsk, Description: "删除长期记忆需确认"},
+		}
+	}
+	for _, spec := range []struct {
+		mode   Mode
+		prefix string
+	}{{ModeCoding, "coding"}, {ModeOffice, "office"}} {
+		cfg, ok := configs[spec.mode]
+		if !ok {
+			continue
+		}
+		cfg.Allow = append(cfg.Allow, read(spec.prefix)...)
+		cfg.Ask = append(cfg.Ask, write(spec.prefix)...)
+		configs[spec.mode] = cfg
 	}
 }

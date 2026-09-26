@@ -1,0 +1,17 @@
+{
+  "id": "cursor",
+  "name": "Cursor",
+  "description": "Cursor 编辑器。Provider/模型配置保存在编辑器内部存储里（基于 VS Code 布局，不是可安全编辑的明文 JSON），本项目未核实其存储格式，因此不提供 files 目标，只给通用 OpenAI 兼容环境变量形态；路径/schema 需用户确认。",
+  "docs": "https://docs.cursor.com/",
+  "detect": {
+    "binaries": ["cursor"],
+    "paths": ["~/.cursor", "%APPDATA%/Cursor"]
+  },
+  "env": {
+    "base_url": "OPENAI_BASE_URL",
+    "api_key": "OPENAI_API_KEY",
+    "style": "export"
+  },
+  "restart_note": "需完全退出 Cursor 再重新启动（Reload Window 不够：进程级环境变量只在进程启动时读取）。",
+  "protocols": ["openai-chat"]
+}

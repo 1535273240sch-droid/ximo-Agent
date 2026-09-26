@@ -513,6 +513,129 @@ func TestClientStreamDoneAlwaysLast(t *testing.T) {
 	}
 }
 
+// trailingUsageSSE 是 OpenAI include_usage 的真实分片顺序：
+// 内容 → finish_reason → usage（独立分片）→ [DONE]。
+const trailingUsageSSE = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+	"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+	"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n" +
+	"data: [DONE]\n\n"
+
+// TestClientStreamKeepsTrailingUsageAfterFinish 是「尾随 usage」的回归用例（D1）。
+//
+// 缺陷：主循环读到 finish_reason 就 break，而 include_usage 形态把 usage 放在它**之后**
+// 的独立分片里 → usage 永远取不到 → 调用方只能按 0 token 计费（等于这次请求免计费）。
+// 修复前本用例在「usage 必须被取到」处失败（负控见报告：去掉扫尾后本用例变红）。
+//
+// 同时钉住两件事：① 结束原因作为独立分片透出（网关据此决定 stop_reason）；
+// ② 扫尾不得重复投递内容（文本不能变成 "hellohello"）。
+func TestClientStreamKeepsTrailingUsageAfterFinish(t *testing.T) {
+	doer := &fakeDoer{handler: func(int, *http.Request) (*http.Response, error) {
+		return httpResponse(200, trailingUsageSSE), nil
+	}}
+	c := newTestClient(t, doer)
+
+	ch, err := c.Stream(context.Background(), CompletionRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Stream 报错: %v", err)
+	}
+
+	var (
+		content    strings.Builder
+		contentN   int
+		usage      *TokenUsage
+		usageAt    int
+		finish     FinishReason
+		finishAt   int
+		doneAt     int
+		doneChunks int
+		n          int
+	)
+	for chunk := range ch {
+		n++
+		if chunk.Content != "" {
+			contentN++
+			content.WriteString(chunk.Content)
+		}
+		if chunk.Usage != nil {
+			usage, usageAt = chunk.Usage, n
+		}
+		if chunk.FinishReason != "" {
+			finish, finishAt = chunk.FinishReason, n
+		}
+		if chunk.Done {
+			doneChunks++
+			doneAt = n
+		}
+	}
+
+	if usage == nil {
+		t.Fatal("尾随 usage 被丢掉：finish_reason 之后的 usage 分片未被解析（D1 回归）")
+	}
+	if usage.PromptTokens != 11 || usage.CompletionTokens != 7 || usage.TotalTokens != 18 {
+		t.Fatalf("usage = %d/%d/%d，期望 11/7/18", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	}
+	if got := content.String(); got != "hello" {
+		t.Fatalf("Content = %q，期望 hello（扫尾不得重复投递内容）", got)
+	}
+	if contentN != 1 {
+		t.Fatalf("内容分片应只有 1 条，实际 %d 条", contentN)
+	}
+	if finish != FinishStop {
+		t.Fatalf("结束原因分片 = %q，期望 stop（上游显式报告的值）", finish)
+	}
+	if !(finishAt < usageAt && usageAt < doneAt) {
+		t.Fatalf("分片顺序应为 finish(%d) → usage(%d) → Done(%d)", finishAt, usageAt, doneAt)
+	}
+	if doneChunks != 1 || doneAt != n {
+		t.Fatalf("Done 应恰好一条且为最后一条：doneChunks=%d doneAt=%d n=%d", doneChunks, doneAt, n)
+	}
+}
+
+// TestClientCompleteKeepsTrailingUsageAfterFinish 确认非流式聚合路径同样不丢尾随 usage
+// （请求体照旧带 include_usage，上游按同一分片顺序回；聚合器在 finish_reason 处收尾会丢）。
+func TestClientCompleteKeepsTrailingUsageAfterFinish(t *testing.T) {
+	doer := &fakeDoer{handler: func(int, *http.Request) (*http.Response, error) {
+		return httpResponse(200, trailingUsageSSE), nil
+	}}
+	c := newTestClient(t, doer)
+
+	resp, err := c.Complete(context.Background(), CompletionRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Complete 报错: %v", err)
+	}
+	if resp.Content != "hello" {
+		t.Fatalf("Content = %q，期望 hello", resp.Content)
+	}
+	if resp.FinishReason != FinishStop {
+		t.Fatalf("FinishReason = %q，期望 stop", resp.FinishReason)
+	}
+	if resp.Usage == nil {
+		t.Fatal("聚合结果丢失尾随 usage（D1 回归）")
+	}
+	if resp.Usage.PromptTokens != 11 || resp.Usage.CompletionTokens != 7 {
+		t.Fatalf("usage = %d/%d，期望 11/7", resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	}
+}
+
+// TestClientStreamNoFinishChunkWhenUpstreamSilent 确认上游整条流都不报 finish_reason 时
+// 不得伪造结束原因分片 —— 空值正是网关回退到推断的判据。
+func TestClientStreamNoFinishChunkWhenUpstreamSilent(t *testing.T) {
+	doer := &fakeDoer{handler: func(int, *http.Request) (*http.Response, error) {
+		return httpResponse(200, sseOK), nil
+	}}
+	c := newTestClient(t, doer)
+
+	ch, err := c.Stream(context.Background(), CompletionRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Stream 报错: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.FinishReason != "" {
+			t.Fatalf("上游没报结束原因，分片却带了 %q", chunk.FinishReason)
+		}
+	}
+}
+
 // TestClientStreamContextCancel 确认 ctx 取消后流终止且 goroutine 不泄漏。
 //
 // 真实的 http.Client 在 ctx 取消时会关闭响应体，因此这里的 fake 也用

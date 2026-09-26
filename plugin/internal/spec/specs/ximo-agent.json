@@ -1,0 +1,30 @@
+{
+  "id": "ximo-agent",
+  "name": "XIMO Agent（本产品）",
+  "description": "XIMO Agent 自身，**需要代码适配**：优先走 IPC 帧（system.config.set / RuntimeSettingsPayload），实现在 internal/agents，本规格的 files 只是 IPC 不可用时的回退路径。字段名已对着 v2 分支核对：config.json 顶层 provider 对象的 id/name/base_url/model/secret_ref（internal/config/config.go:446 ProviderConfig）。红线：api_key **绝不写入 config.json**——该文件只保留 secret_ref，明文 key 由 ximo-plugin 自己的 0600 凭据存储（或用户明确要求时落盘）持有，所以本规格刻意不映射 secret_ref。此处只覆盖主 provider 的四个字段，providers 候选池数组（internal/agents 的 IPC 路径才管）不予触碰。默认路径是 Windows 的 %APPDATA%/ximo-agent/config.json；**若本机设置了 XIMO_HOME，或你在 macOS/Linux 上，请在 apply 前把 files[0].path 改成真实配置路径（例 %XIMO_HOME%/config.json / ~/.config/ximo-agent/config.json），否则会写错位置**。",
+  "detect": {
+    "binaries": ["ximo-agent"],
+    "paths": [
+      "%APPDATA%/ximo-agent/config.json",
+      "%APPDATA%/ximo-agent",
+      "%XIMO_HOME%/config.json",
+      "~/.config/ximo-agent/config.json",
+      "~/Library/Application Support/ximo-agent/config.json"
+    ]
+  },
+  "files": [
+    {
+      "path": "%APPDATA%/ximo-agent/config.json",
+      "format": "json",
+      "create": false,
+      "fields": [
+        { "path": "provider.base_url", "from": "base_url" },
+        { "path": "provider.model", "from": "model" },
+        { "path": "provider.name", "from": "literal", "value": "XIMO 中转站" },
+        { "path": "provider.id", "from": "literal", "value": "ximo-gateway" }
+      ]
+    }
+  ],
+  "restart_note": "config.json 在引擎装配期读取，改文件后必须重启 ximo-agent；若由 internal/agents 通过 IPC 帧写入，则即时生效、无需重启。",
+  "protocols": ["openai-chat"]
+}

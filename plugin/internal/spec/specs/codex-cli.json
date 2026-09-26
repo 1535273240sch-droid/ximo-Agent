@@ -1,0 +1,17 @@
+{
+  "id": "codex-cli",
+  "name": "OpenAI Codex CLI",
+  "description": "OpenAI Codex CLI（codex）。本项目未核实 ~/.codex/config.toml 的 model_providers 段 schema，因此只给通用的 OpenAI 兼容环境变量形态（OPENAI_BASE_URL / OPENAI_API_KEY）；要改成写配置文件的路径与 schema 需用户确认。",
+  "docs": "https://github.com/openai/codex",
+  "detect": {
+    "binaries": ["codex"],
+    "paths": ["~/.codex"]
+  },
+  "env": {
+    "base_url": "OPENAI_BASE_URL",
+    "api_key": "OPENAI_API_KEY",
+    "style": "export"
+  },
+  "restart_note": "需重启终端与 codex 进程（已在跑的会话读不到新环境变量）。",
+  "protocols": ["openai-chat"]
+}

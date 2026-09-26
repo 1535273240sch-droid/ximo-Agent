@@ -1,0 +1,17 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code",
+  "description": "Anthropic 官方 CLI。走 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 两个环境变量接中转站。本项目未核实 ~/.claude/settings.json 的字段 schema，因此本规格不提供 files 目标（不猜路径/schema）——若你要改成写配置文件，路径与 schema 需用户确认后再自行复制本规格补 files。",
+  "docs": "https://docs.anthropic.com/en/docs/claude-code/settings",
+  "detect": {
+    "binaries": ["claude"],
+    "paths": ["~/.claude"]
+  },
+  "env": {
+    "base_url": "ANTHROPIC_BASE_URL",
+    "api_key": "ANTHROPIC_AUTH_TOKEN",
+    "style": "export"
+  },
+  "restart_note": "环境变量只对之后启动的进程生效：需关闭并重开终端与 Claude Code 会话；已在运行的会话不会读到新值。",
+  "protocols": ["anthropic-messages"]
+}

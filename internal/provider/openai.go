@@ -284,6 +284,11 @@ func (c *Client) readNonStreamBody(body io.Reader) (CompletionResponse, error) {
 			break
 		}
 	}
+	// 与流式路径同样的问题：结束分片之后的尾随 usage 不能丢，否则聚合结果按 0 token
+	// 上报（请求体照旧带 stream_options.include_usage，上游就会按那个形态回）。
+	if acc.usage == nil && !acc.sawDone {
+		acc.drainTrailingUsage(dec, nil)
+	}
 	return acc.toResponse(), nil
 }
 

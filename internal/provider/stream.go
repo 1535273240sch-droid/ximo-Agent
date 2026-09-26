@@ -119,6 +119,11 @@ type streamAccumulator struct {
 	usage   *TokenUsage
 	emitted bool
 
+	// usageSent 是否已把 usage 作为分片推给调用方 —— 收尾补发据此去重。
+	usageSent bool
+	// sawDone 是否读到上游的 [DONE]。[DONE] 之后没有尾随分片可扫（见 drainTrailingUsage）。
+	sawDone bool
+
 	// finishReason 服务端最后一次报告的结束原因。
 	finishReason FinishReason
 }
@@ -174,6 +179,7 @@ type rawUsage struct {
 // onChunk 可为 nil（非流式聚合场景）。
 func (a *streamAccumulator) consume(data string, onChunk func(StreamChunk)) (stop bool, err error) {
 	if data == "[DONE]" {
+		a.sawDone = true
 		a.finishReason = a.resolveFinishReason(FinishStop)
 		return true, nil
 	}
@@ -189,17 +195,10 @@ func (a *streamAccumulator) consume(data string, onChunk func(StreamChunk)) (sto
 	}
 
 	if chunk.Usage != nil {
-		u := NormalizeUsage(
-			chunk.Usage.PromptTokens,
-			chunk.Usage.CompletionTokens,
-			chunk.Usage.TotalTokens,
-			chunk.Usage.PromptCacheHitTokens,
-			chunk.Usage.PromptCacheMissToken,
-			usageNestedCached(chunk.Usage),
-			usageReasoning(chunk.Usage),
-		)
+		u := normalizeRawUsage(chunk.Usage)
 		a.usage = &u
 		if onChunk != nil {
+			a.usageSent = true
 			onChunk(StreamChunk{Usage: &u})
 		}
 	}
@@ -268,6 +267,12 @@ func (a *streamAccumulator) consume(data string, onChunk func(StreamChunk)) (sto
 
 	if choice.FinishReason != "" {
 		a.finishReason = mapFinishReason(choice.FinishReason)
+		// 单独发一条只带结束原因的分片：调用方据此决定响应里的 stop_reason，
+		// 不必再靠「有没有工具调用」去推断。注意这里发的是 mapFinishReason 的结果，
+		// 不是 resolveFinishReason —— 后者会把 stop 归一成 tool_calls，属聚合口径。
+		if onChunk != nil {
+			onChunk(StreamChunk{FinishReason: a.finishReason})
+		}
 		return true, nil
 	}
 	return false, nil
@@ -282,6 +287,60 @@ func (a *streamAccumulator) resolveFinishReason(fallback FinishReason) FinishRea
 		return a.finishReason
 	}
 	return fallback
+}
+
+// tailMaxEvents 收尾扫描允许读取的最大事件数。
+//
+// 正常形态只有两条（usage 分片 + [DONE]）；上限用于兜住上游在结束分片之后还多发
+// 几条冗余/心跳分片的实现，避免被它拖住。
+const tailMaxEvents = 4
+
+// trailingIdleTimeout 收尾扫描的空闲窗口：扫尾读的是「本该立刻到达」的 usage 分片，
+// 不该按正常流的 DefaultIdleTimeout（60s）去等。收紧它只影响扫尾阶段：上游把结束
+// 分片发完却既不补 usage/[DONE] 也不关连接时，最多多等这么久就收尾，而不是 60s。
+const trailingIdleTimeout = 2 * time.Second
+
+// drainTrailingUsage 在结束分片之后继续扫尾，只认 usage 与 [DONE]，命中即停。
+//
+// 为什么必须扫：OpenAI 的 stream_options.include_usage 形态把 usage 放在
+// finish_reason **之后**的独立分片里 —— 内容 → finish_reason → usage → [DONE]。
+// 读到结束分片就 break 会让尾随的 usage 永远取不到，调用方只能按 0 token 计费
+// （等于这次请求免计费），而网关侧始终请求 include_usage，所以必然踩到。
+//
+// 边界与取舍：
+//   - 只在「还没有 usage」且「还没看到 [DONE]」时调用 —— usage 已在手就无需再读；
+//     [DONE] 之后上游可能既不发数据也不关连接，越过它会白等。
+//   - 尽力而为，永不返回错误：结束分片已到即说明这次响应是完整的，扫尾读失败
+//     （含空闲看门狗把上下文取消）只意味着 usage 取不到，不能把成功的流转成错误。
+//   - 最多 tailMaxEvents 条；usage 之外的事件一律忽略，绝不会重复投递内容分片。
+func (a *streamAccumulator) drainTrailingUsage(dec *sseDecoder, onChunk func(StreamChunk)) {
+	for i := 0; i < tailMaxEvents; i++ {
+		data, ok, err := dec.Next()
+		if err != nil || !ok {
+			return
+		}
+		if data == "[DONE]" {
+			a.sawDone = true
+			return
+		}
+		var chunk rawChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // 坏分片不影响收尾（与主循环同款容错）
+		}
+		if chunk.Error != nil && chunk.Error.Message != "" {
+			return // 流已正常结束，尾随的错误事件不再改判终态
+		}
+		if chunk.Usage == nil {
+			continue // 只认 usage 与 [DONE]
+		}
+		u := normalizeRawUsage(chunk.Usage)
+		a.usage = &u
+		if onChunk != nil {
+			a.usageSent = true
+			onChunk(StreamChunk{Usage: &u})
+		}
+		return // 命中即停
+	}
 }
 
 // collectedToolCalls 按出现顺序输出累积的工具调用。
@@ -341,6 +400,20 @@ func usageReasoning(u *rawUsage) int {
 		return u.PromptTokensDetails.ReasoningTokens
 	}
 	return 0
+}
+
+// normalizeRawUsage 把一条分片里的原始 usage 字段归一为 TokenUsage。
+// 主循环与收尾扫描共用，保证两条路径的口径完全一致。
+func normalizeRawUsage(u *rawUsage) TokenUsage {
+	return NormalizeUsage(
+		u.PromptTokens,
+		u.CompletionTokens,
+		u.TotalTokens,
+		u.PromptCacheHitTokens,
+		u.PromptCacheMissToken,
+		usageNestedCached(u),
+		usageReasoning(u),
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -524,8 +597,18 @@ func (c *Client) doStreamHTTP(ctx context.Context, req CompletionRequest, meta R
 	if reqCtx.Err() != nil {
 		return acc.emitted, ctxError(reqCtx, ctx)
 	}
-	// 结束时补一条带 usage 的收尾分片（若 usage 已单独推过则为空通知）。
-	if acc.usage != nil && !acc.emitted {
+	// 结束分片不是终点：include_usage 形态把 usage 放在 finish_reason 之后，
+	// 这里继续扫尾把它捞回来（详见 drainTrailingUsage）。已在手 / 已见 [DONE] 就不扫。
+	if acc.usage == nil && !acc.sawDone {
+		idle.tighten(trailingIdleTimeout)
+		acc.drainTrailingUsage(dec, func(chunk StreamChunk) {
+			chunk.Meta = meta
+			sendChunk(reqCtx, out, chunk)
+		})
+	}
+	// 收尾补发：usage 还没作为分片推过（上游把 usage 与结束分片合并上报等）才补，
+	// 判据是「是否已发过 usage」而不是「是否输出过内容」—— 后者会让有内容的响应丢 usage。
+	if acc.usage != nil && !acc.usageSent {
 		sendChunk(reqCtx, out, StreamChunk{Usage: acc.usage, Meta: meta})
 	}
 	return acc.emitted, nil
@@ -626,4 +709,16 @@ func (w *idleWatchdog) stop() {
 	defer w.mu.Unlock()
 	w.armed = false
 	w.timer.Stop()
+}
+
+// tighten 收紧空闲窗口（只影响下一次超时）：收尾扫描用它把「等尾随 usage」的
+// 容忍时间从 DefaultIdleTimeout 降到 trailingIdleTimeout。窗口不会放宽。
+func (w *idleWatchdog) tighten(d time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.armed || d <= 0 || d >= w.d {
+		return
+	}
+	w.d = d
+	w.timer.Reset(d)
 }

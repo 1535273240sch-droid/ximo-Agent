@@ -1,0 +1,15 @@
+{
+  "id": "env-anthropic",
+  "name": "仅环境变量（Anthropic 兼容）",
+  "description": "不修改任何文件，只把指定网关打印成 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 的 export / set / powershell 三种形式，适用于任何认这两个变量的 Anthropic 兼容客户端。模型名由客户端自己的参数决定。",
+  "detect": {
+    "env": ["ANTHROPIC_API_KEY"]
+  },
+  "env": {
+    "base_url": "ANTHROPIC_BASE_URL",
+    "api_key": "ANTHROPIC_AUTH_TOKEN",
+    "style": "export"
+  },
+  "restart_note": "环境变量只对之后启动的进程生效；已打开的客户端需重启。",
+  "protocols": ["anthropic-messages"]
+}

@@ -1,0 +1,26 @@
+{
+  "id": "openai-compatible-generic",
+  "name": "通用 OpenAI 兼容客户端",
+  "description": "任意 OpenAI 兼容客户端。默认形态是通用环境变量 OPENAI_BASE_URL / OPENAI_API_KEY。files 里的 ~/.ximo-plugin/openai-compatible.env 是**本插件自己维护的 dotenv 落盘文件**，不是任何第三方客户端的官方配置路径（该文件含明文 key、按 0600 权限写入，只应在用户明确要求落盘时使用；不想落盘就用 print-env）。要接入某个具体客户端：复制本 JSON，改 files[0].path 与字段映射——目标路径/schema 需用户确认。",
+  "detect": {
+    "env": ["OPENAI_BASE_URL"]
+  },
+  "env": {
+    "base_url": "OPENAI_BASE_URL",
+    "api_key": "OPENAI_API_KEY",
+    "style": "export"
+  },
+  "files": [
+    {
+      "path": "~/.ximo-plugin/openai-compatible.env",
+      "format": "dotenv",
+      "create": true,
+      "fields": [
+        { "path": "OPENAI_BASE_URL", "from": "base_url" },
+        { "path": "OPENAI_API_KEY", "from": "api_key" }
+      ]
+    }
+  ],
+  "restart_note": "环境变量形式需重开终端；dotenv 文件由使用方自行 source，改完要重新 source 才会生效。",
+  "protocols": ["openai-chat"]
+}

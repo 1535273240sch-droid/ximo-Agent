@@ -70,6 +70,11 @@ type Dependencies struct {
 	Reviewer agent.Reviewer
 	// Confirmer resolves tool calls that need a human decision.
 	Confirmer agent.Confirmer
+	// Memory is the optional long-term memory collaborator. Nil (or an
+	// implementation that is configured off) means runs behave exactly as
+	// before: nothing is recalled into the prompt and nothing is extracted.
+	// See memory.go for the port's contract and the injection point.
+	Memory MemoryPort
 	// Supervisor receives core-panic notifications (task 01).
 	Supervisor agent.Supervisor
 	// Experts is the expert registry the task-3 direct-activation path reads.
@@ -414,6 +419,10 @@ func (e *Engine) Submit(ctx context.Context, req types.SubmitRequest) (types.Run
 	}
 
 	conv := agent.NewConversation(req.SystemPrompt, req.Prompt, req.Tools)
+	// 长期记忆召回：把与本次提示相关的历史记忆注入为一条独立 system 消息，
+	// 位置在稳定系统提示词之后、用户消息之前（三条理由见 memory.go）。
+	// 没有命中、未装配或服务不可用时是 no-op，run 照常开始。
+	injectMemoryMessage(conv, e.recallMemory(ctx, req.Prompt))
 	machine := agent.NewMachine(runID, sessionID, &machineSink{engine: e, actor: actor, sessionID: sessionID})
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -1345,6 +1354,20 @@ func (e *Engine) finishRun(ctx context.Context, rec *runRecord, state types.RunS
 	e.mu.Unlock()
 
 	e.sched.Budget().ForgetRun(runID)
+
+	// 长期记忆回填：只投递「真的产出了答复」的终态。投递只是入队（非阻塞），
+	// 因此不影响收尾时序；记忆写没写成只影响记忆自身的完整性，不影响本 run。
+	//
+	// rec.request 在构造时写入、之后只读（见 Submit / rehydrateRun），所以这里
+	// 不取锁读它是安全的；会话 id 用不可变访问器取。
+	if answer != "" && (state == types.StateCompleted || state == types.StateCancelled) {
+		e.rememberTurn(MemoryTurn{
+			RunID:     runID,
+			SessionID: rec.sessionID(),
+			Prompt:    rec.request.Prompt,
+			Answer:    answer,
+		})
+	}
 }
 
 // runTask is the scheduler's Runner: it dispatches by task kind.

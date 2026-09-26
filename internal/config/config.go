@@ -22,6 +22,9 @@ const (
 	FlagCheckpointCAS   = "checkpoint.cas"
 	FlagContextV2       = "context.v2"
 	FlagSchedulerV2     = "scheduler.v2"
+	// FlagMemory 是长期记忆（mem0）的总开关。它与配置段的 memory.enabled 是
+	// 「与」的关系：特性开关用于整机/整环境熔断，配置段用于用户级开关。
+	FlagMemory = "memory.mem0"
 )
 
 // DefaultFeatureFlags 返回默认开启的特性开关
@@ -34,6 +37,10 @@ func DefaultFeatureFlags() map[string]bool {
 		FlagCheckpointCAS:   true,
 		FlagContextV2:       true,
 		FlagSchedulerV2:     true,
+		// 长期记忆默认关闭：它依赖一个外部服务（mem0）与一份额外密钥，在用户
+		// 显式配置之前不该改变任何行为。这也是 DefaultFeatureFlags 里唯一的
+		// 例外，所以单独说明。
+		FlagMemory: false,
 	}
 }
 
@@ -624,6 +631,9 @@ type Config struct {
 	Providers []ProviderConfig `json:"providers,omitempty"`
 	// SubAgent 是子代理模型分配配置（任务 5 设置面板写入）。
 	SubAgent SubAgentConfig `json:"sub_agent,omitempty"`
+	// Memory 是长期记忆（mem0）配置。零值时整段为空，行为与本特性不存在时
+	// 完全一致——老配置文件不含该键也照常加载。
+	Memory MemoryConfig `json:"memory,omitempty"`
 }
 
 // ResolveDBPath 返回 SQLite 主库的最终路径：显式配置优先，否则落在 DataDir。

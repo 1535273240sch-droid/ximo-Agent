@@ -134,6 +134,12 @@ func DefaultClassPolicy() *ClassPolicy {
 			"knowledge:add":    ClassDetectable,
 			"knowledge:update": ClassDetectable,
 			"knowledge:delete": ClassNonIdempotent,
+			// memory 按动作分类：检索/浏览只读（A），写入可检测（B），
+			// 遗忘是外部状态删除，崩溃恢复绝不自动重复（C）。
+			"memory:search": ClassIdempotent,
+			"memory:list":   ClassIdempotent,
+			"memory:add":    ClassDetectable,
+			"memory:forget": ClassNonIdempotent,
 			// git_operations 的只读动作
 			"git_operations:status": ClassDetectable,
 			"git_operations:log":    ClassIdempotent,
