@@ -16,6 +16,9 @@ import "time"
 type MemoryConfig struct {
 	// Enabled 总开关。默认关闭：记忆依赖一个外部服务，不该在用户没配之前生效。
 	Enabled bool `json:"enabled"`
+	// Backend 选择后端："mem0"（HTTP，需要外部服务）或 "embedded"（进程内 SQLite，
+	// 零依赖）。留空按 endpoint 推断：填了走 mem0，没填走进程内。
+	Backend string `json:"backend,omitempty"`
 	// Endpoint 是 mem0 服务地址，例如 http://127.0.0.1:8888（上游 compose 把
 	// REST API 发布在宿主机 8888；3000 是 dashboard，它不代理 /memories、/search）。
 	Endpoint string `json:"endpoint,omitempty"`

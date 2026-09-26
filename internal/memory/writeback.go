@@ -81,7 +81,7 @@ func (s *Service) extract(turn Turn) {
 	if turn.SessionID != "" {
 		metadata["session_id"] = turn.SessionID
 	}
-	if _, err := s.client.Add(ctx, msgs, AddOptions{RunID: turn.RunID, Metadata: metadata}); err != nil {
+	if _, err := s.backend.Add(ctx, msgs, AddOptions{RunID: turn.RunID, Metadata: metadata}); err != nil {
 		s.failed.Add(1)
 		s.logWarn(ctx, "长期记忆回填失败，本轮记忆未落库", err)
 		return

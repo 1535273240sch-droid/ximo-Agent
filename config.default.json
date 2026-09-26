@@ -45,6 +45,7 @@
   },
   "memory": {
     "enabled": false,
+    "backend": "embedded",
     "endpoint": "http://127.0.0.1:8888",
     "secret_ref": "",
     "user_id": "ximo-user",

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,9 +20,9 @@ import (
 // 这两个签名是刻意设计的：调用点分别在 run 的入口与收尾路径上，那里没有
 // 「记忆出问题该怎么办」的答案，所以答案必须是「什么也不做，继续跑」。
 type Service struct {
-	cfg    Config
-	client *Client
-	gate   Gate
+	cfg     Config
+	backend Backend
+	gate    Gate
 
 	queue  chan Turn
 	closed chan struct{}
@@ -45,15 +46,15 @@ type Service struct {
 //
 // client 为 nil 或配置未启用时返回一个「空服务」而不是错误：调用方（bootstrap）
 // 不需要为「用户没开记忆」写分支，服务自己会把所有调用变成 no-op。
-func NewService(cfg Config, client *Client, gate Gate) *Service {
+func NewService(cfg Config, backend Backend, gate Gate) *Service {
 	cfg = cfg.WithDefaults()
 	s := &Service{
-		cfg:    cfg,
-		client: client,
-		gate:   gate,
-		closed: make(chan struct{}),
+		cfg:     cfg,
+		backend: backend,
+		gate:    gate,
+		closed:  make(chan struct{}),
 	}
-	if !cfg.Active() || client == nil {
+	if !cfg.Active() || backend == nil {
 		return s
 	}
 	if cfg.WriteBack {
@@ -67,7 +68,7 @@ func NewService(cfg Config, client *Client, gate Gate) *Service {
 }
 
 // Enabled 报告召回是否可用。
-func (s *Service) Enabled() bool { return s != nil && s.client != nil && s.cfg.Active() }
+func (s *Service) Enabled() bool { return s != nil && s.backend != nil && s.cfg.Active() }
 
 // Config 返回生效配置。
 func (s *Service) Config() Config {
@@ -79,13 +80,13 @@ func (s *Service) Config() Config {
 
 // Ping 对 mem0 服务做一次带鉴权的健康检查（供设置页「测试连接」使用）。
 func (s *Service) Ping(ctx context.Context) error {
-	if s == nil || s.client == nil {
+	if s == nil || s.backend == nil {
 		return ErrDisabled
 	}
-	return s.client.Ping(ctx)
+	return s.backend.Ping(ctx)
 }
 
-// Close 停止回填 worker。可重复调用。
+// Close 停止回填 worker，并关闭持有文件句柄的后端。可重复调用。
 //
 // 等待是有界的：正在进行的抽取最多占用 ExtractTimeout，进程退出不该被记忆回填
 // 拖住。等待超时后仍有 goroutine 在跑是可接受的——它写的是外部服务的记忆，
@@ -96,17 +97,21 @@ func (s *Service) Close() {
 	}
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		if s.queue == nil {
-			return
+		if s.queue != nil {
+			waited := make(chan struct{})
+			go func() {
+				s.wg.Wait()
+				close(waited)
+			}()
+			select {
+			case <-waited:
+			case <-time.After(s.extractTimeout()):
+			}
 		}
-		waited := make(chan struct{})
-		go func() {
-			s.wg.Wait()
-			close(waited)
-		}()
-		select {
-		case <-waited:
-		case <-time.After(s.extractTimeout()):
+		// 进程内后端（SQLite）持有文件句柄：不关掉会让下一次启动拿不到写锁。
+		// 这个类型断言是"后端可选实现 io.Closer"的完整语义，不需要再加接口方法。
+		if c, ok := s.backend.(io.Closer); ok {
+			_ = c.Close()
 		}
 	})
 }
@@ -134,8 +139,8 @@ func (s *Service) Stats() Stats {
 		stats.Closed = true
 	default:
 	}
-	if s.client != nil {
-		stats.LastError, stats.LastErrorAt = s.client.LastError()
+	if s.backend != nil {
+		stats.LastError, stats.LastErrorAt = s.backend.LastError()
 	}
 	return stats
 }
@@ -146,34 +151,34 @@ func (s *Service) Stats() Stats {
 
 // Search 检索记忆。
 func (s *Service) Search(ctx context.Context, query string, topK int) ([]Record, error) {
-	if s == nil || s.client == nil {
+	if s == nil || s.backend == nil {
 		return nil, ErrDisabled
 	}
-	return s.client.Search(ctx, query, SearchOptions{TopK: topK})
+	return s.backend.Search(ctx, query, SearchOptions{TopK: topK})
 }
 
 // Add 直接写入一段文本（工具路径，不经引擎收尾）。
 func (s *Service) Add(ctx context.Context, msgs []Message, opts AddOptions) ([]Record, error) {
-	if s == nil || s.client == nil {
+	if s == nil || s.backend == nil {
 		return nil, ErrDisabled
 	}
-	return s.client.Add(ctx, msgs, opts)
+	return s.backend.Add(ctx, msgs, opts)
 }
 
 // GetAll 列出记忆。
 func (s *Service) GetAll(ctx context.Context, topK int) ([]Record, error) {
-	if s == nil || s.client == nil {
+	if s == nil || s.backend == nil {
 		return nil, ErrDisabled
 	}
-	return s.client.GetAll(ctx, topK)
+	return s.backend.GetAll(ctx, topK)
 }
 
 // Delete 删除一条记忆。
 func (s *Service) Delete(ctx context.Context, id string) error {
-	if s == nil || s.client == nil {
+	if s == nil || s.backend == nil {
 		return ErrDisabled
 	}
-	return s.client.Delete(ctx, id)
+	return s.backend.Delete(ctx, id)
 }
 
 // logWarn 记录一条告警。错误细节在 Client 侧已经脱敏（密钥不会出现在这里）。

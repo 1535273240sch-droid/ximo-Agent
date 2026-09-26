@@ -48,8 +48,13 @@ const (
 type Config struct {
 	// Enabled 总开关。为假时引擎行为与没有本特性完全一致。
 	Enabled bool
+	// Backend 选择存储后端：BackendMem0（HTTP，需外部服务）或 BackendEmbedded
+	// （进程内 SQLite，零依赖）。留空表示按 Endpoint 推断：填了 endpoint 走 mem0，
+	// 没填则走进程内后端 —— 这样"打开开关就能用"是最短路径。
+	Backend string
 	// Endpoint 是 mem0 服务地址，例如 http://127.0.0.1:8888（上游 compose 的 API
 	// 宿主端口；3000 是 dashboard，/memories 与 /search 在它上面会 404）。
+	// 进程内后端不需要它。
 	Endpoint string
 	// SecretRef 指向密钥库中的 mem0 API Key（secrets.Manager 的 ref）。
 	// 为空表示服务端未开鉴权（AUTH_DISABLED 的本地开发部署）。
@@ -122,8 +127,36 @@ func (c Config) WithDefaults() Config {
 	return c
 }
 
-// Active 报告召回是否可用：开关打开且 endpoint 有效。
-func (c Config) Active() bool { return c.Enabled && c.Endpoint != "" }
+// Active 报告记忆是否可用：开关打开，且**后端所需的字段**已配好。
+//
+// 进程内后端不需要 endpoint，因此"打开开关就能用"不会因为少填一个地址而被判为未启用。
+func (c Config) Active() bool {
+	if !c.Enabled {
+		return false
+	}
+	if c.EffectiveBackend() == BackendEmbedded {
+		return true
+	}
+	return c.Endpoint != ""
+}
+
+// EffectiveBackend 返回生效的后端名：显式配置优先，留空则按 endpoint 推断。
+func (c Config) EffectiveBackend() string {
+	switch strings.ToLower(strings.TrimSpace(c.Backend)) {
+	case BackendEmbedded, "local", "sqlite", "builtin":
+		return BackendEmbedded
+	case BackendMem0, "http":
+		return BackendMem0
+	case "":
+		if strings.TrimSpace(c.Endpoint) != "" {
+			return BackendMem0
+		}
+		return BackendEmbedded
+	default:
+		// 未识别的值交给 Validate 报错，这里先按 mem0 返回，避免静默改变语义。
+		return BackendMem0
+	}
+}
 
 // Validate 校验配置。它只在「启用」时严格：关闭状态下任何字段都可以为空，
 // 这样老配置文件（完全没有 memory 段）永远能通过。
@@ -131,11 +164,19 @@ func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if c.Endpoint == "" {
-		return fmt.Errorf("memory: 启用长期记忆必须配置 endpoint")
+	switch strings.ToLower(strings.TrimSpace(c.Backend)) {
+	case "", BackendMem0, "http", BackendEmbedded, "local", "sqlite", "builtin":
+	default:
+		return fmt.Errorf("memory: backend 只能是 %q 或 %q，当前为 %q",
+			BackendMem0, BackendEmbedded, c.Backend)
 	}
-	if !strings.HasPrefix(c.Endpoint, "http://") && !strings.HasPrefix(c.Endpoint, "https://") {
-		return fmt.Errorf("memory: endpoint 必须是 http(s) 地址，当前为 %q", c.Endpoint)
+	if c.EffectiveBackend() == BackendMem0 {
+		if c.Endpoint == "" {
+			return fmt.Errorf("memory: 使用 mem0 后端必须配置 endpoint（进程内后端不需要它）")
+		}
+		if !strings.HasPrefix(c.Endpoint, "http://") && !strings.HasPrefix(c.Endpoint, "https://") {
+			return fmt.Errorf("memory: endpoint 必须是 http(s) 地址，当前为 %q", c.Endpoint)
+		}
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("memory: timeout 必须为正")

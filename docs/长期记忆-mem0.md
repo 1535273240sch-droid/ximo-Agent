@@ -252,3 +252,64 @@ map**，与 `FeatureManager` 不是同一条路（`NewFeatureManager` 目前只�
 - **不新增数据库 schema**。「这个 run 已回填」直接复用 `tool_idempotency` 表的
   原子 `Claim`（该表由 `0002_tool_idempotency.sql` 建立），不新开一张表。
 - **不做跨用户共享**。`user_id` 默认 `ximo-user`，是单机单用户的语义。
+
+---
+
+## 附：进程内后端（推荐，零依赖）
+
+上面几节讲的是 **mem0 自托管**路线：需要 Docker + Postgres(pgvector) + 一个抽取用的
+LLM + 一个**额外的向量模型**（DeepSeek 没有 embeddings 接口）。这套东西部署面大，
+对"就想让工作台记住我的偏好"这个目标来说不成比例。
+
+引擎现在自带一个**进程内后端**：记忆存在本机一个 SQLite 文件里，随引擎一起跑，
+不需要 Docker、不需要任何服务、不需要密钥。
+
+### 怎么开
+
+`config.json` 里两个开关打开即可，`backend` 都不用写（留空时：给了 `endpoint` 走
+mem0，没给就走进程内）：
+
+```jsonc
+{
+  "feature_flags": { "memory.mem0": true },   // 一级开关
+  "memory": {
+    "enabled": true,                          // 二级开关
+    "backend": "embedded",                    // 可省略；显式写更清楚
+    "user_id": "ximo-user",
+    "agent_id": "ximo-agent",
+    "top_k": 5,
+    "recall_max_chars": 1200,
+    "write_back": true,
+    "timeout": 700000000,
+    "extract_timeout": 30000000000,
+    "queue_depth": 32,
+    "max_inflight": 2
+  }
+}
+```
+
+记忆文件位置：`<BaseDir>/data/memory.db`。删掉它 = 清空全部记忆。
+
+### 与 mem0 路线的差别（有意为之，不是缺陷）
+
+| | 进程内后端 | mem0 自托管 |
+| --- | --- | --- |
+| 依赖 | 无（引擎自带） | Docker + Postgres + LLM + 向量模型 |
+| 写入 | **原样存这一轮问答** | LLM 抽取成"事实" |
+| 检索 | **词法**（中文单字+二元组，英文按词） | 向量语义检索 |
+| 同义改写命中 | 弱（"深色界面" 命不中 "暗色主题"） | 强 |
+| 数据位置 | 本机文件，不出机器 | 你自托管的 Postgres |
+
+选哪条：只想"记住我说过的偏好"→ 进程内后端足够；要更强的语义召回、或者团队多人
+共享一套记忆 → 用 mem0 路线。两者共用同一套配置与同一条引擎链路，切换只改
+`backend` 与 `endpoint`。
+
+### 实现位置
+
+- `internal/memory/embedded.go` —— 进程内后端（SQLite）
+- `internal/memory/lexical.go` —— 词法分词与打分（要升级成语义检索，换这里的打分函数即可）
+- `internal/memory/backend.go` —— 后端接口（`*Client` 与 `*EmbeddedBackend` 都满足它）
+- `internal/bootstrap/memory.go` —— 按 `backend` 选后端
+
+测试：`go test ./internal/memory/...`（含写入幂等、词法排序、同库多用户隔离、
+后端选择与校验）。

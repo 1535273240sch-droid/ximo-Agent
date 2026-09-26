@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/ximo888ok-netizen/ximo-agent/internal/config"
@@ -49,16 +50,41 @@ func buildMemoryService(cfg *config.Config, app *App, db *sqlite.DB) *memory.Ser
 		return nil
 	}
 
-	client := memory.NewClient(memCfg, memory.ClientOptions{
-		APIKey: memoryKeyResolver(app, cfg),
-	})
-	svc := memory.NewService(memCfg, client, memoryGate{store: tool.NewIdempotencyStore(
+	backend, ok := buildMemoryBackend(app, cfg, memCfg)
+	if !ok {
+		return nil
+	}
+	svc := memory.NewService(memCfg, backend, memoryGate{store: tool.NewIdempotencyStore(
 		tool.NewSQLIdempotencyDB(db.ReadDB()),
 		toolCallResolver{},
 		nil, // nil = 使用 DefaultClassPolicy，与工具路径保持一致
 		memoryExtractionTTL,
 	)})
 	return svc
+}
+
+// buildMemoryBackend 按配置选后端：进程内 SQLite（默认，零依赖）或 mem0（HTTP）。
+//
+// 进程内后端失败（目录不可写、库打不开）时返回 false —— 与其它可选能力一致，
+// 记忆装不起来只告警，绝不阻断启动。
+func buildMemoryBackend(app *App, cfg *config.Config, memCfg memory.Config) (memory.Backend, bool) {
+	if memCfg.EffectiveBackend() == memory.BackendEmbedded {
+		path := filepath.Join(cfg.Paths.DataDir, "memory.db")
+		eb, err := memory.NewEmbeddedBackend(path, memCfg)
+		if err != nil {
+			observability.LogWarn(context.Background(), "进程内记忆库打不开，长期记忆关闭",
+				map[string]any{"path": path, "err": err.Error()})
+			return nil, false
+		}
+		observability.LogInfo(context.Background(), "长期记忆使用进程内后端（SQLite）",
+			map[string]any{"path": path, "user_id": memCfg.UserID})
+		return eb, true
+	}
+	observability.LogInfo(context.Background(), "长期记忆使用 mem0 服务",
+		map[string]any{"endpoint": memCfg.Endpoint, "user_id": memCfg.UserID})
+	return memory.NewClient(memCfg, memory.ClientOptions{
+		APIKey: memoryKeyResolver(app, cfg),
+	}), true
 }
 
 // memoryGate 把工具层的幂等存储适配成 memory.Gate。
@@ -109,6 +135,7 @@ func (a memoryAdapter) Remember(turn engine.MemoryTurn) {
 func memoryConfigFrom(mc config.MemoryConfig) memory.Config {
 	out := memory.DefaultConfig()
 	out.Enabled = mc.Enabled
+	out.Backend = mc.Backend
 	out.Endpoint = memory.NormalizeEndpoint(mc.Endpoint)
 	out.SecretRef = mc.SecretRef
 	if mc.UserID != "" {

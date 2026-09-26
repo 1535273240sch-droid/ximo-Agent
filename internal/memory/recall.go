@@ -67,7 +67,7 @@ func Block(records []Record, maxChars int) string {
 // 记忆」对调用方是同一种结果——这一轮没有记忆，对话照常继续。失败会打一条
 // 告警日志并计入统计，而不是静默吞掉。
 func (s *Service) Recall(ctx context.Context, query string) string {
-	if s == nil || s.client == nil || !s.cfg.Active() {
+	if s == nil || s.backend == nil || !s.cfg.Active() {
 		return ""
 	}
 	if strings.TrimSpace(query) == "" {
@@ -75,7 +75,7 @@ func (s *Service) Recall(ctx context.Context, query string) string {
 	}
 	s.recallCalls.Add(1)
 
-	records, err := s.client.Search(ctx, query, SearchOptions{})
+	records, err := s.backend.Search(ctx, query, SearchOptions{})
 	if err != nil {
 		s.recallErrors.Add(1)
 		s.logWarn(ctx, "长期记忆召回失败，本轮按「无记忆」继续", err)
