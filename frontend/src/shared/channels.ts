@@ -37,6 +37,22 @@ export const IPC = {
   /** 模型列表查询。 */
   ModelList: 'ximo:model:list',
 
+  /**
+   * 记忆图读写面（P1-c，审核文档 4.9）。
+   *
+   * 与 FrameType.Memory* 一一对应；主进程把每个频道转成同名帧发往后端。
+   */
+  MemoryGraph: 'ximo:memory:graph',
+  MemoryNodeGet: 'ximo:memory:node:get',
+  MemoryNodeUpdate: 'ximo:memory:node:update',
+  MemoryNodeDelete: 'ximo:memory:node:delete',
+  MemoryLink: 'ximo:memory:link',
+  MemoryConsolidate: 'ximo:memory:consolidate',
+  MemoryExport: 'ximo:memory:export',
+  MemoryImport: 'ximo:memory:import',
+  MemoryStats: 'ximo:memory:stats',
+  MemoryClear: 'ximo:memory:clear',
+
   WindowMinimize: 'ximo:window:minimize',
   WindowMaximize: 'ximo:window:maximize',
   WindowClose: 'ximo:window:close'

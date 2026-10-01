@@ -18,7 +18,15 @@ const RUN_STATE_HINT: Record<string, string> = {
   recovering: '正在从崩溃日志中恢复运行现场…'
 }
 
-export function ChatView(): React.JSX.Element {
+export function ChatView({
+  onOpenMemoryNode
+}: {
+  /**
+   * 点击 Work Log 里「回忆到的某条记忆」时跳转到记忆页并聚焦该节点。
+   * 由 App 注入（它同时负责切视图与写 memory-store 的 focusNodeId）。
+   */
+  onOpenMemoryNode?: (nodeId: string) => void
+} = {}): React.JSX.Element {
   const activeSessionId = useStore((s) => s.activeSessionId)
   const runs = useStore((s) => s.runs)
   const submit = useStore((s) => s.submit)
@@ -112,6 +120,7 @@ export function ChatView(): React.JSX.Element {
                 }
                 onContinue={handleContinue}
                 continuing={continuing}
+                onOpenMemoryNode={onOpenMemoryNode}
               />
             )
           )}

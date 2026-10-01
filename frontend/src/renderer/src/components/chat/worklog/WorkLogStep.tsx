@@ -87,10 +87,13 @@ export function statusLabel(status: RunStep['status']): string {
  */
 export function WorkLogStep({
   step,
-  children
+  children,
+  onOpenMemoryNode
 }: {
   step: RunStep
   children?: React.ReactNode
+  /** 点击「回忆到的某条记忆」→ 跳到记忆页并聚焦该节点（审核文档 4.9 第 5 条）。 */
+  onOpenMemoryNode?: (nodeId: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const d = step.detail
@@ -171,7 +174,7 @@ export function WorkLogStep({
 
         {open && hasDetail && d && (
           <div className="mt-1.5 rounded-[6px] border border-border/[0.08] bg-surface/60 p-2">
-            <StepDetailBody detail={d} />
+            <StepDetailBody detail={d} onOpenMemoryNode={onOpenMemoryNode} />
           </div>
         )}
       </div>
@@ -180,7 +183,13 @@ export function WorkLogStep({
 }
 
 /** StepDetailBody 渲染一个步骤的可展开细节。 */
-function StepDetailBody({ detail }: { detail: NonNullable<RunStep['detail']> }): React.JSX.Element {
+function StepDetailBody({
+  detail,
+  onOpenMemoryNode
+}: {
+  detail: NonNullable<RunStep['detail']>
+  onOpenMemoryNode?: (nodeId: string) => void
+}): React.JSX.Element {
   return (
     <div className="flex flex-col gap-2">
       {detail.args && Object.keys(detail.args).length > 0 && (
@@ -207,12 +216,32 @@ function StepDetailBody({ detail }: { detail: NonNullable<RunStep['detail']> }):
       {detail.recalled && detail.recalled.length > 0 && (
         <DetailBlock label={`相关记忆 ${detail.recalled.length} 条`}>
           <ul className="flex flex-col gap-1">
-            {detail.recalled.map((r) => (
-              <li key={r.id} className="text-[11.5px] leading-relaxed text-ink-muted">
-                <span className="text-ink">{r.text}</span>
-                {r.via && <span className="ml-1 text-ink-faint">↳ {r.via}</span>}
-              </li>
-            ))}
+            {detail.recalled.map((r) => {
+              // 可跳转时做成按钮：用户看到「原来想起了这条」之后，下一步几乎
+              // 一定想看它到底写了什么。不可跳转（没有回调）时退化为纯文本。
+              const body = (
+                <>
+                  <span className="text-ink">{r.text}</span>
+                  {r.via && <span className="ml-1 text-ink-faint">↳ {r.via}</span>}
+                </>
+              )
+              return (
+                <li key={r.id} className="text-[11.5px] leading-relaxed text-ink-muted">
+                  {onOpenMemoryNode ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenMemoryNode(r.id)}
+                      title="在记忆页中查看这个节点"
+                      className="w-full rounded-[4px] px-1 py-0.5 text-left transition-colors hover:bg-surface-raised hover:text-ink"
+                    >
+                      {body}
+                    </button>
+                  ) : (
+                    body
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </DetailBlock>
       )}

@@ -68,7 +68,24 @@ export const FrameType = {
   SecretStatus: 'system.secret.status',
   ConfigGet: 'system.config.get',
   ConfigSet: 'system.config.set',
-  ModelList: 'system.model.list'
+  ModelList: 'system.model.list',
+  /**
+   * 记忆图读写面（P1-c，审核文档 4.9）。
+   *
+   * 命名空间是 system.memory.*：记忆是跨 run 的长期资产，不属于任何一次 run
+   * 的生命周期。名字与 Go 侧 ipc.TypeMemory* 逐字一致——拼错不会报错，
+   * 只会表现为「记忆页永远是空的」。
+   */
+  MemoryGraph: 'system.memory.graph',
+  MemoryNodeGet: 'system.memory.node.get',
+  MemoryNodeUpdate: 'system.memory.node.update',
+  MemoryNodeDelete: 'system.memory.node.delete',
+  MemoryLink: 'system.memory.link',
+  MemoryConsolidate: 'system.memory.consolidate',
+  MemoryExport: 'system.memory.export',
+  MemoryImport: 'system.memory.import',
+  MemoryStats: 'system.memory.stats',
+  MemoryClear: 'system.memory.clear'
 } as const
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType]

@@ -18,6 +18,14 @@ import type {
   DurableEvent,
   EventsPayload,
   HandlePayload,
+  MemoryExport,
+  MemoryGraph,
+  MemoryGraphMutation,
+  MemoryGraphRequest,
+  MemoryLink,
+  MemoryNodeDetail,
+  MemoryNodeUpdate,
+  MemoryStats,
   ModelListPayload,
   RecoveryPayload,
   RunPayload,
@@ -70,6 +78,37 @@ const bridge: XimoBridge = {
 
   listModels: (opts?: { base_url?: string }): Promise<ModelListPayload> =>
     ipcRenderer.invoke(IPC.ModelList, opts),
+
+  // ---- 记忆图（P1-c，审核文档 4.9）---------------------------------------
+  // 与 confirmPlan / decide 完全同构：一个频道一个 invoke，载荷原样透传。
+  // 这里不做字段名转换，也不做默认值填充——两端共用同一份契约。
+  memoryGraph: (req: MemoryGraphRequest): Promise<MemoryGraph> =>
+    ipcRenderer.invoke(IPC.MemoryGraph, req),
+
+  memoryNode: (id: string): Promise<MemoryNodeDetail> =>
+    ipcRenderer.invoke(IPC.MemoryNodeGet, id),
+
+  memoryUpdateNode: (upd: MemoryNodeUpdate): Promise<MemoryNodeDetail> =>
+    ipcRenderer.invoke(IPC.MemoryNodeUpdate, upd),
+
+  memoryDeleteNode: (id: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.MemoryNodeDelete, id),
+
+  memoryLink: (link: MemoryLink): Promise<MemoryGraphMutation> =>
+    ipcRenderer.invoke(IPC.MemoryLink, link),
+
+  memoryConsolidate: (): Promise<MemoryGraphMutation> =>
+    ipcRenderer.invoke(IPC.MemoryConsolidate),
+
+  memoryExport: (): Promise<MemoryExport> => ipcRenderer.invoke(IPC.MemoryExport),
+
+  memoryImport: (doc: MemoryExport): Promise<MemoryGraphMutation> =>
+    ipcRenderer.invoke(IPC.MemoryImport, doc),
+
+  memoryStats: (): Promise<MemoryStats> => ipcRenderer.invoke(IPC.MemoryStats),
+
+  memoryClear: (confirm: string): Promise<MemoryGraphMutation> =>
+    ipcRenderer.invoke(IPC.MemoryClear, confirm),
 
   onEvent: (handler: (ev: DurableEvent) => void): (() => void) => {
     const listener = (_e: unknown, ev: DurableEvent): void => handler(ev)

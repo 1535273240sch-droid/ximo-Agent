@@ -155,6 +155,91 @@ type DecideResultPayload struct {
 	Ok bool `json:"ok"`
 }
 
+// ---------------------------------------------------------------------------
+// 记忆图（P1-c，审核文档 4.9）
+// ---------------------------------------------------------------------------
+//
+// 这一组帧是「记忆网络视图」的数据来源。它们与 run 生命周期无关（记忆是跨 run 的
+// 长期资产），因此挂在 system.memory.* 命名空间下，而不是 engine.run.*。
+//
+// **单一真相**：请求/响应形状的定义在 internal/types/t02_memory_graph.go，与
+// `types.MemoryGraphPort` 接口放在一起——因为那一份类型同时是端口的参数类型，
+// 而端口是 bootstrap 与 ipcapi 都要遵守的契约。这里只保留类型别名，不再抄第二份
+// 结构体：两份形状一旦并存，改一边漏一边不会编译失败，只会让界面永远拿到零值。
+//
+// 与其它 DTO 同一条规则：字段只能追加；前端 frontend/src/shared/types.ts 的对应
+// 接口是同一契约的另一侧，必须同一个提交里一起改。
+
+// MemoryIDPayload 是「按节点 id 操作」类请求的载荷。
+type MemoryIDPayload struct {
+	NodeID string `json:"node_id"`
+}
+
+// MemoryGraphPayload 是 TypeMemoryGraph 的请求体（分页取子图）。
+type MemoryGraphPayload = types.MemoryGraphRequest
+
+// MemoryGraphResult 是 TypeMemoryGraph 的响应体。
+type MemoryGraphResult = types.MemoryGraph
+
+// MemoryGraphNode / MemoryGraphEdge / MemoryRecallEntry 是图元素。
+type (
+	MemoryGraphNode   = types.MemoryGraphNode
+	MemoryGraphEdge   = types.MemoryGraphEdge
+	MemoryRecallEntry = types.MemoryRecallEntry
+)
+
+// MemoryNodePayload 是 TypeMemoryNodeGet / node.update 的响应体。
+type MemoryNodePayload = types.MemoryNodeDetail
+
+// MemoryNodeUpdatePayload 是 TypeMemoryNodeUpdate 的请求体。
+//
+// 可选字段一律用指针的三态（nil = 不改）。用零值表示「清空」会把「用户没动这个
+// 字段」与「用户想把它置空」混为一谈，而这是记忆数据，改错一条无法自动还原。
+type MemoryNodeUpdatePayload = types.MemoryNodeUpdate
+
+// MemoryLinkPayload 是 TypeMemoryLink 的请求体：显式建立一条边。
+type MemoryLinkPayload = types.MemoryLink
+
+// MemoryExportPayload 是 TypeMemoryExport 的响应体，同时是 TypeMemoryImport 的
+// 请求体形状。
+//
+// 导出必须是可读的 JSON，而不是数据库文件：用户的诉求是「把我的记忆带走/备份」，
+// 一个需要 SQLite 才能打开的二进制文件做不到这件事。
+type MemoryExportPayload = types.MemoryExport
+
+// MemoryImportPayload 是 TypeMemoryImport 的请求体。
+type MemoryImportPayload = types.MemoryExport
+
+// MemoryExportNode 是导出文件里的一个节点（含完整正文）。
+type MemoryExportNode = types.MemoryExportNode
+
+// MemoryGraphMutationResult 是图写操作（link / node.update / consolidate / import）
+// 的统一响应：报告做了什么，而不是只说「成功」。
+//
+// 它**不是**别名：端口契约里 Stats 是值类型（「一定有统计」），而线上 DTO 用指针
+// （「这次没带统计」要能和「统计全为 0」区分）。这一层差异由 mutationPayload 转换。
+type MemoryGraphMutationResult struct {
+	OK bool `json:"ok"`
+	// Affected 是受影响的节点/边数量，按操作含义解释（合并数、归档数……）。
+	Affected int `json:"affected,omitempty"`
+	// Notes 是给用户看的补充说明（例如「3 条矛盾由较新者取代」）。
+	Notes []string `json:"notes,omitempty"`
+	// Stats 是操作后的计数快照，方便界面就地刷新。
+	Stats *MemoryStatsPayload `json:"stats,omitempty"`
+}
+
+// MemoryStatsPayload 是记忆后端的计数快照。同样是别名：字段与
+// types.MemoryStats 完全一致，分开定义只会多一处漂移点。
+type MemoryStatsPayload = types.MemoryStats
+
+// MemoryClearPayload 是 TypeMemoryClear 的请求体：清空全部记忆。
+//
+// Confirm 必须显式为字面量 "DELETE_ALL"，否则拒绝执行：这是一个不可撤销的操作，
+// 而 IPC 参数是可以被脚本拼出来的，需要一个「人写的」确认值。
+type MemoryClearPayload struct {
+	Confirm string `json:"confirm"`
+}
+
 // RecoveryPayload 是恢复完成后的回报载荷。
 type RecoveryPayload struct {
 	// Plans 是本次恢复扫描得出的计划（含 skip）。

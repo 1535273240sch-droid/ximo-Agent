@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -323,6 +324,81 @@ func buildExtractionPrompt(material string) string {
 importance 取 0..1；entities 写规范名（人 / 项目 / 工具 / 文件 / 概念）。
 材料：
 ` + material
+}
+
+// ParseExtractionJSON 从模型输出里解析严格 JSON 抽取结果。
+//
+// 它只做一件事：把第一个完整的 JSON 对象取出来。模型经常把 JSON 包在 ```json
+// 代码块里，或在前后加一句"好的，以下是抽取结果"——这是要容忍的格式噪声；
+// 但**不做任何宽松修复**：解析失败就是失败，调用方回退规则抽取。从半截 JSON
+// 里"猜"出事实，比少记一条记忆危险得多。
+//
+// 返回的结果仍会经过 sanitizeExtraction（脱敏、截断、夹取重要度）。
+func ParseExtractionJSON(raw string) (SynapseExtraction, error) {
+	var ex SynapseExtraction
+	s := stripJSONFence(strings.TrimSpace(raw))
+	if s == "" {
+		return ex, errors.New("memory: 抽取返回为空")
+	}
+	if obj, ok := firstJSONObject(s); ok {
+		s = obj
+	}
+	if err := json.Unmarshal([]byte(s), &ex); err != nil {
+		return SynapseExtraction{}, fmt.Errorf("memory: 抽取结果不是合法 JSON: %w", err)
+	}
+	return ex, nil
+}
+
+// stripJSONFence 去掉 Markdown 代码块围栏（```json ... ```）。
+func stripJSONFence(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	s = strings.TrimPrefix(s, "```")
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:] // 丢掉 "json" 这类语言标注
+	}
+	if i := strings.LastIndex(s, "```"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// firstJSONObject 取出第一个大括号配平的 JSON 对象（跳过字符串里的括号）。
+func firstJSONObject(s string) (string, bool) {
+	start := strings.IndexByte(s, '{')
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 // sanitizeExtraction 清洗模型输出：丢空条目、截断到上限、把重要度夹到 0..1。

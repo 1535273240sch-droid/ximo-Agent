@@ -118,6 +118,15 @@ func (b *SynapseBackend) importLegacyRows(ctx context.Context, rows []synapseLeg
 		if text == "" || normalizeContent(text) == "" {
 			continue
 		}
+		// 幂等闸放在 insertNode 之前：insertNode 命中同 hash 时会 use_count++，
+		// 那是"这条记忆又被用到了一次"的语义，迁移重跑不该伪造它。这里先查
+		// 存在性，存在就只记统计、不碰任何计数。
+		if _, exists, err := b.nodeIDByHash(ctx, tx, NodeFact, contentHash(text)); err != nil {
+			return fmt.Errorf("memory: 迁移旧记忆失败: %w", err)
+		} else if exists {
+			res.NodesExisting++
+			continue
+		}
 		created := now
 		if t, err := time.Parse(time.RFC3339, r.createdAt); err == nil {
 			created = t.UTC()
@@ -242,6 +251,13 @@ func (b *SynapseBackend) importKnowledgeRows(ctx context.Context, rows []synapse
 		if looksLikeProcedure(content) {
 			kind = NodeProcedure
 		}
+		// 同 importLegacyRows：先查存在性，避免重跑时把 use_count 顶高。
+		if _, exists, err := b.nodeIDByHash(ctx, tx, kind, contentHash(content)); err != nil {
+			return fmt.Errorf("memory: 迁移 knowledge 条目失败: %w", err)
+		} else if exists {
+			res.NodesExisting++
+			continue
+		}
 		id, createdNow, err := b.insertNode(ctx, tx, synapseNode{
 			ID: newSynapseID("mn_"), Kind: kind, Title: title, Content: content,
 			Importance: 0.6, SourceRun: r.source, CreatedAt: created,
@@ -326,6 +342,25 @@ func parseTags(raw string) []string {
 	return nil
 }
 
+// nodeIDByHash 按 (user_id, kind, hash) 找已有节点，用于迁移的幂等闸。
+//
+// 为什么不用 insertNode 自带的去重：insertNode 命中同 hash 时会 use_count++，
+// 那是"这条记忆又被用到了一次"的语义。迁移重跑（例如上次迁移中途失败）不该
+// 伪造这个计数，否则用户会看到"我什么都没干，记忆的使用次数涨了"。
+func (b *SynapseBackend) nodeIDByHash(ctx context.Context, q synQuerier, kind, hash string) (string, bool, error) {
+	var id string
+	err := q.QueryRowContext(ctx, `SELECT id FROM mem_nodes WHERE user_id=? AND kind=? AND hash=?`,
+		b.opts.UserID, kind, hash).Scan(&id)
+	switch {
+	case err == nil:
+		return id, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	default:
+		return "", false, err
+	}
+}
+
 // countAllNodes 数当前用户的全部节点（迁移统计的差值基线）。
 func (b *SynapseBackend) countAllNodes(ctx context.Context) int {
 	var n int
@@ -356,4 +391,39 @@ func (b *SynapseBackend) MigrateAll(ctx context.Context, old *EmbeddedBackend, k
 	memRes.SourceKnowledge = kbRes.SourceKnowledge
 	memRes.KnowledgeSkipped = kbRes.KnowledgeSkipped
 	return memRes, nil
+}
+
+// synapseMigrationUserVersion 是"旧数据迁移已完成"在 SQLite user_version 里的
+// 标记值。
+//
+// 为什么用 PRAGMA user_version 而不是新增一张标记表：迁移状态是库自己的元数据，
+// 不是记忆数据模型的一部分（文档 4.3 的表清单里不该多出一张）。user_version 是
+// SQLite 内建的、不占 schema、不参与任何业务查询，正好放这类信息。
+//
+// 为什么需要它：只按"图里有没有节点"判断是不够的——用户清空全部记忆之后重启，
+// 图是空的，会把早已迁移过的旧数据又导回来。
+const synapseMigrationUserVersion = 1
+
+// MigrationDone 报告旧数据迁移是否已经完成过。
+func (b *SynapseBackend) MigrationDone(ctx context.Context) (bool, error) {
+	if b == nil || b.db == nil {
+		return false, ErrDisabled
+	}
+	var v int
+	if err := b.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
+		return false, fmt.Errorf("memory: 读取迁移标记失败: %w", err)
+	}
+	return v >= synapseMigrationUserVersion, nil
+}
+
+// MarkMigrationDone 记录迁移已完成。只有迁移成功返回后才应调用它。
+func (b *SynapseBackend) MarkMigrationDone(ctx context.Context) error {
+	if b == nil || b.db == nil {
+		return ErrDisabled
+	}
+	// PRAGMA 不接受绑定参数，这里的值是一个包级常量，不存在注入面。
+	if _, err := b.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version=%d`, synapseMigrationUserVersion)); err != nil {
+		return fmt.Errorf("memory: 写入迁移标记失败: %w", err)
+	}
+	return nil
 }

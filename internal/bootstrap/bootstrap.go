@@ -49,6 +49,9 @@ type App struct {
 	// memorySvc 是长期记忆（mem0）服务，未启用时为 nil。引擎通过适配器使用它，
 	// memory 工具直接用同一个实例，两者共用同一组有界回填 worker。
 	memorySvc *memory.Service
+	// synapse 是图记忆后端（memory.backend = "synapse"）的读写面，其它后端下为
+	// nil。IPC 层的记忆图帧直接用它（见 App.MemoryGraph）。
+	synapse *memory.SynapseGraph
 
 	// cfg 是本次装配使用的配置。界面修改配置时需要它作为基准。
 	cfg *config.Config

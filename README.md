@@ -41,6 +41,9 @@
 成回答上方的一张可折叠卡片，并给出「已闭环 / 部分完成 / 需要你决定 / 失败」的
 结论与依据。需要授权的工具就在对应步骤里内联「批准 / 拒绝」。
 
+「记忆」页把长期记忆画成一张可交互的网络图（节点 = 记忆，边 = 关系，粗细 = 衰减后的
+实际强度），可以编辑、置顶、归档、遗忘、手动连线，也可以导出 / 导入 JSON。
+
 ---
 
 ## 快速开始
@@ -174,27 +177,34 @@ scripts\mem0\mem0-up.cmd          REM 起 mem0 服务（需 Docker Desktop，版
 [`docs/长期记忆-mem0.md`](docs/长期记忆-mem0.md)；后端安装与启停见
 [`scripts/mem0/README.md`](scripts/mem0/README.md)。
 
-### Synapse 图记忆（`internal/memory` 内已实现，尚未装配到配置）
+### Synapse 图记忆（`memory.backend: "synapse"`）
 
 审核文档第 4 章要求把「扁平事实列表」升级成「带权图 + 扩散激活 + 赫布学习 +
-惰性衰减 + 后台整理」。后端已经实现为 `memory.SynapseBackend`（`internal/memory/synapse*.go`）：
+惰性衰减 + 后台整理」。这就是 `memory.SynapseBackend`（`internal/memory/synapse*.go`）：
 
-- 数据模型：`mem_nodes` / `mem_edges` / `mem_fts`（FTS5）/ `mem_recall_log`，独立库文件，不动引擎库的迁移注册表；
+- 数据模型：`mem_nodes` / `mem_edges` / `mem_fts`（FTS5）/ `mem_recall_log`，与旧后端同库共存，不动引擎库的迁移注册表；
 - 写入流水线：脱敏 → 抽取（模型严格 JSON，失败回退规则；最多 8 条事实）→ 归一化去重 → 实体链接 → 建边 → 矛盾检测（旧节点 `superseded`）→ 单事务落库；
-- 召回：FTS5 bm25 + 可选嵌入 + 实体最长匹配 → 2 跳扩散激活（阈值 0.05、fanOut 8、hopDecay 0.6/0.35）→ 打分与预算裁剪 → 注入文本，并在每条 `Record.Metadata` 里带 `via` 路径，用来回答「为什么想起它」；
+- 召回：FTS5 bm25 + 可选嵌入 + 实体最长匹配 → 2 跳扩散激活（阈值 0.05、fanOut 8、hopDecay 0.6/0.35）→ 打分与预算裁剪 → 注入文本；每次召回发一条 `memory.recalled` 事件，带每条记忆的激活路径（`via`），Work Log 与记忆页据此显示「回忆了哪几条、为什么」；
 - 学习与遗忘：赫布强化（η=0.15 向 1 饱和）、未采用边权 ×0.97、`used_with` 45 天 / `related` 90 天半衰期惰性衰减、`pinned` 不衰减；
-- 整理与迁移：`Consolidate`（去重合并 / 主题聚合 / 矛盾裁决 / 归档）+ 旧 `memories` 表幂等导入。
+- 整理与迁移：`Consolidate`（去重合并 / 主题聚合 / 矛盾裁决 / 归档）+ 旧 `memories` 表与 knowledge 条目的幂等迁移（首次启用时自动执行，用 `PRAGMA user_version` 做闸）。
 
-**尚未接线**：配置层已能识别 `memory.backend: "synapse"`（`EffectiveBackend` /
-`Validate` / `Active`），但 bootstrap 还没有按该值构造后端，因此运行中的默认行为
-与本次改动前完全一致（审计文档的「未启用 → 请求逐字节一致」承诺仍然成立）。
-在装配完成前，请继续使用上面的 mem0 或内置 embedded 后端。
+两个开关都要开（`memory.enabled` 是用户级开关，`feature_flags.memory.mem0` 是整机熔断）：
 
-同步地，`memory.recalled` 事件已在前端时间线上就绪（会渲染成「回忆 N 条相关记忆」
-步骤并可展开看路径），但引擎侧还没有发出该事件——原因同上：结构化召回结果需要
-先把 synapse 后端接进 `engine.MemoryPort`。
+```jsonc
+{
+  "feature_flags": { "memory.mem0": true },
+  "memory": { "enabled": true, "backend": "synapse", "user_id": "ximo-user" }
+}
+```
 
-设计细节、与审核文档 4.x 的三处偏差（FTS5 external-content 的 DDL 写法、同步触发器、
+打开后侧栏出现「记忆」页：力导向网络图（`d3-force` + Canvas）、节点详情（编辑 /
+置顶 / 归档 / 遗忘 / 手动连线）、列表视图、导出 / 导入 JSON、手动「整理记忆」。
+界面与引擎之间的读写面是十个 `system.memory.*` 帧。
+
+**尚未装配**：嵌入模型（`Embedder`）仍为 nil，即纯词法召回——文档 4.11 明确这是
+有意取舍（无嵌入时功能完整、只是同义改写命中率较低），界面里已如实说明。
+
+设计细节、与审核文档 4.x 的偏差（FTS5 external-content 的 DDL 写法、同步触发器、
 额外索引与查询侧单字裁剪）见 `internal/memory/README-synapse.md`。
 
 ---

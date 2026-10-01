@@ -34,6 +34,11 @@ interface WorkLogProps {
   /** 闭环「继续」：以未通过检查项作为新任务继续。 */
   onContinue?: () => void
   continuing?: boolean
+  /**
+   * 点击「回忆到的某条记忆」→ 跳到记忆页并聚焦该节点（审核文档 4.9 第 5 条）。
+   * 不传时条目退化为纯文本（旧调用点无需改动）。
+   */
+  onOpenMemoryNode?: (nodeId: string) => void
 }
 
 export function WorkLog({
@@ -47,7 +52,8 @@ export function WorkLog({
   pendingApproval,
   onDecide,
   onContinue,
-  continuing
+  continuing,
+  onOpenMemoryNode
 }: WorkLogProps): React.JSX.Element | null {
   const terminal = isTerminalState(state)
   const running = !terminal
@@ -138,7 +144,7 @@ export function WorkLog({
 
           <ul className="flex flex-col px-3 py-2" role="list">
             {steps.map((s) => (
-              <WorkLogStep key={s.id} step={s}>
+              <WorkLogStep key={s.id} step={s} onOpenMemoryNode={onOpenMemoryNode}>
                 {pendingApproval && pendingApproval.callId === s.id && onDecide && (
                   <ApprovalInline
                     pending={pendingApproval}

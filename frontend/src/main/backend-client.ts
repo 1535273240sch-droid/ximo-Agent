@@ -451,6 +451,69 @@ export class BackendClient {
     return this.request(FrameType.ModelList, { base_url: opts?.base_url ?? '' }, 30_000)
   }
 
+  // -------------------------------------------------------------------------
+  // 记忆图（P1-c，审核文档 4.9）
+  //
+  // 载荷形状与 internal/ipcapi/wire.go 的 DTO 一一对应，这一层不做任何翻译：
+  // 前端 shared/types.ts 与 Go 侧共用同一份契约，中间再抄一次必然漂移。
+  // 图查询可能在大库上较慢，给比默认更长的超时。
+  // -------------------------------------------------------------------------
+
+  /** 取一个子图（分页 / 过滤 / 邻域 / 搜索）。 */
+  memoryGraph(req: unknown): Promise<unknown> {
+    return this.request(FrameType.MemoryGraph, req, 30_000)
+  }
+
+  /** 取单个节点的完整详情。 */
+  memoryNode(nodeId: string): Promise<unknown> {
+    return this.request(FrameType.MemoryNodeGet, { node_id: nodeId })
+  }
+
+  /** 改节点的可变字段，返回更新后的详情。 */
+  memoryUpdateNode(upd: unknown): Promise<unknown> {
+    return this.request(FrameType.MemoryNodeUpdate, upd)
+  }
+
+  /** 硬删除节点及其所有边。 */
+  memoryDeleteNode(nodeId: string): Promise<unknown> {
+    return this.request(FrameType.MemoryNodeDelete, { node_id: nodeId })
+  }
+
+  /** 显式建立一条边。 */
+  memoryLink(link: unknown): Promise<unknown> {
+    return this.request(FrameType.MemoryLink, link)
+  }
+
+  /** 手动触发一次「睡眠整理」：可能耗时（后端限时 20s），给足超时。 */
+  memoryConsolidate(): Promise<unknown> {
+    return this.request(FrameType.MemoryConsolidate, {}, 30_000)
+  }
+
+  /** 导出全部记忆。大库导出可能较大，给足超时。 */
+  memoryExport(): Promise<unknown> {
+    return this.request(FrameType.MemoryExport, {}, 60_000)
+  }
+
+  /** 导入一份导出文件。 */
+  memoryImport(doc: unknown): Promise<unknown> {
+    return this.request(FrameType.MemoryImport, doc, 60_000)
+  }
+
+  /** 计数快照与当前后端名。 */
+  memoryStats(): Promise<unknown> {
+    return this.request(FrameType.MemoryStats, {})
+  }
+
+  /**
+   * 清空全部记忆（不可撤销）。
+   *
+   * confirm 原样透传；后端要求字面量 'DELETE_ALL'，不在这里替用户填——把校验
+   * 留在两侧各自执行，任何一侧被绕过都还有另一侧挡着。
+   */
+  memoryClear(confirm: string): Promise<unknown> {
+    return this.request(FrameType.MemoryClear, { confirm }, 30_000)
+  }
+
   onEvent(handler: (ev: DurableEvent) => void): () => void {
     this.eventHandlers.add(handler)
     return () => this.eventHandlers.delete(handler)

@@ -22,6 +22,14 @@ import type {
   DurableEvent,
   EventsPayload,
   HandlePayload,
+  MemoryExport,
+  MemoryGraph,
+  MemoryGraphMutation,
+  MemoryGraphRequest,
+  MemoryLink,
+  MemoryNodeDetail,
+  MemoryNodeUpdate,
+  MemoryStats,
   ModelListPayload,
   RecoveryPayload,
   RunPayload,
@@ -196,6 +204,61 @@ function registerIpcHandlers(): void {
     IPC.ModelList,
     async (_e, opts?: { base_url?: string }): Promise<ModelListPayload> => {
       return (await requireClient().listModels(opts)) as ModelListPayload
+    }
+  )
+
+  // ---- 记忆图（P1-c，审核文档 4.9）---------------------------------------
+  //
+  // 与 confirmPlan / decide 同一条链路：渲染层 → preload → 这里 → BackendClient
+  // → 帧。这一层不做字段翻译（两端共用同一份契约），只做类型收窄与「后端未连接」
+  // 的早期报错——requireClient 会抛出明确原因，而不是让界面挂在一个永不 resolve
+  // 的 Promise 上。
+  ipcMain.handle(
+    IPC.MemoryGraph,
+    async (_e, req: MemoryGraphRequest): Promise<MemoryGraph> => {
+      return (await requireClient().memoryGraph(req ?? {})) as MemoryGraph
+    }
+  )
+
+  ipcMain.handle(IPC.MemoryNodeGet, async (_e, nodeId: string): Promise<MemoryNodeDetail> => {
+    return (await requireClient().memoryNode(nodeId)) as MemoryNodeDetail
+  })
+
+  ipcMain.handle(
+    IPC.MemoryNodeUpdate,
+    async (_e, upd: MemoryNodeUpdate): Promise<MemoryNodeDetail> => {
+      return (await requireClient().memoryUpdateNode(upd)) as MemoryNodeDetail
+    }
+  )
+
+  ipcMain.handle(IPC.MemoryNodeDelete, async (_e, nodeId: string): Promise<void> => {
+    await requireClient().memoryDeleteNode(nodeId)
+  })
+
+  ipcMain.handle(IPC.MemoryLink, async (_e, link: MemoryLink): Promise<MemoryGraphMutation> => {
+    return (await requireClient().memoryLink(link)) as MemoryGraphMutation
+  })
+
+  ipcMain.handle(IPC.MemoryConsolidate, async (): Promise<MemoryGraphMutation> => {
+    return (await requireClient().memoryConsolidate()) as MemoryGraphMutation
+  })
+
+  ipcMain.handle(IPC.MemoryExport, async (): Promise<MemoryExport> => {
+    return (await requireClient().memoryExport()) as MemoryExport
+  })
+
+  ipcMain.handle(IPC.MemoryImport, async (_e, doc: MemoryExport): Promise<MemoryGraphMutation> => {
+    return (await requireClient().memoryImport(doc)) as MemoryGraphMutation
+  })
+
+  ipcMain.handle(IPC.MemoryStats, async (): Promise<MemoryStats> => {
+    return (await requireClient().memoryStats()) as MemoryStats
+  })
+
+  ipcMain.handle(
+    IPC.MemoryClear,
+    async (_e, confirm: string): Promise<MemoryGraphMutation> => {
+      return (await requireClient().memoryClear(confirm)) as MemoryGraphMutation
     }
   )
 

@@ -16,8 +16,15 @@ import "time"
 type MemoryConfig struct {
 	// Enabled 总开关。默认关闭：记忆依赖一个外部服务，不该在用户没配之前生效。
 	Enabled bool `json:"enabled"`
-	// Backend 选择后端："mem0"（HTTP，需要外部服务）或 "embedded"（进程内 SQLite，
-	// 零依赖）。留空按 endpoint 推断：填了走 mem0，没填走进程内。
+	// Backend 选择后端：
+	//   "mem0"     —— HTTP，需要外部 mem0 服务；
+	//   "embedded" —— 进程内扁平 SQLite（默认）；
+	//   "synapse"  —— 进程内图记忆（带权图 + 扩散激活 + 赫布学习 + 惰性衰减 +
+	//                 后台整理；详见 internal/memory/README-synapse.md）。
+	// 留空按 endpoint 推断：填了走 mem0，没填走进程内 embedded。
+	//
+	// 后两者都是进程内后端，不需要 endpoint；首次把 backend 改成 synapse 时会自动
+	// 把旧 memories 表与 knowledge 条目迁移进图（按内容哈希幂等，旧数据不删除）。
 	Backend string `json:"backend,omitempty"`
 	// Endpoint 是 mem0 服务地址，例如 http://127.0.0.1:8888（上游 compose 把
 	// REST API 发布在宿主机 8888；3000 是 dashboard，它不代理 /memories、/search）。

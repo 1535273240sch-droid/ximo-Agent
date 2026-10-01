@@ -1,6 +1,6 @@
 {
   "name": "ximo-agent",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "XimoAgent v2 - 全能 Agent 工作台（Go 引擎 + Electron 前端，第三方 OpenAI 兼容接口）",
   "author": "ximo",
   "main": "out/main/index.js",
@@ -17,6 +17,7 @@
     "build:win": "electron-vite build && electron-builder --win"
   },
   "dependencies": {
+    "d3-force": "^3.0.0",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -26,11 +27,11 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
     "@types/node": "^22.10.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@testing-library/dom": "^10.4.0",
-    "@testing-library/react": "^16.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",

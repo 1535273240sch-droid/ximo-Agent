@@ -52,6 +52,21 @@ const (
 	TypeConfigSet    = "system.config.set"
 	// 模型列表：向服务商的 /models 端点查询可用模型，供界面下拉选择。
 	TypeModelList = "system.model.list"
+
+	// ---- 记忆图（P1-c，审核文档 4.9）----
+	//
+	// 聊天之外的「记忆页」需要的读写面。命名空间是 system.memory.*：记忆是跨 run
+	// 的长期资产，不属于任何一次 run 的生命周期，所以不放进 engine.run.*。
+	TypeMemoryGraph       = "system.memory.graph"
+	TypeMemoryNodeGet     = "system.memory.node.get"
+	TypeMemoryNodeUpdate  = "system.memory.node.update"
+	TypeMemoryNodeDelete  = "system.memory.node.delete"
+	TypeMemoryLink        = "system.memory.link"
+	TypeMemoryConsolidate = "system.memory.consolidate"
+	TypeMemoryExport      = "system.memory.export"
+	TypeMemoryImport      = "system.memory.import"
+	TypeMemoryStats       = "system.memory.stats"
+	TypeMemoryClear       = "system.memory.clear"
 )
 
 // FrameHeader 帧头结构体（完全对齐任务01规范中提供给 02 和 05 的契约）

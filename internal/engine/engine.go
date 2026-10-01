@@ -447,7 +447,12 @@ func (e *Engine) Submit(ctx context.Context, req types.SubmitRequest) (types.Run
 	// 长期记忆召回：把与本次提示相关的历史记忆注入为一条独立 system 消息，
 	// 位置在稳定系统提示词之后、用户消息之前（三条理由见 memory.go）。
 	// 没有命中、未装配或服务不可用时是 no-op，run 照常开始。
-	injectMemoryMessage(conv, e.recallMemory(ctx, req.Prompt))
+	//
+	// 结构化条目（recallItems）稍后在 run 落盘为 queued 之后写成
+	// memory.recalled 事件——事件必须引用一个已存在的 run，而这里 run 还只
+	// 在 actor 的内存表里。
+	recallText, recallItems := e.recallMemoryDetailed(ctx, req.Prompt)
+	injectMemoryMessage(conv, recallText)
 	machine := agent.NewMachine(runID, sessionID, &machineSink{engine: e, actor: actor, sessionID: sessionID})
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -473,6 +478,10 @@ func (e *Engine) Submit(ctx context.Context, req types.SubmitRequest) (types.Run
 		e.releaseRun(runID, ticket)
 		return types.RunHandle{}, err
 	}
+
+	// 记忆召回事件：run 此刻已经是 durable 的 queued 状态，事件可以安全引用它。
+	// 放在终态之前、执行之前，与其它"逻辑边界"事件的时序约定一致。
+	e.emitMemoryRecalled(ctx, runID, sessionID, recallItems)
 
 	// Claim ownership before the run goroutine exists, so the invariant "a
 	// running run has exactly one owner" holds from the first instant (I1).

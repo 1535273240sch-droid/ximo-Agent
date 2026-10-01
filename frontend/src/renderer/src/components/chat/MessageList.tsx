@@ -12,6 +12,8 @@ interface MessageListProps {
   /** 闭环「继续」：以未通过检查项作为新任务继续。 */
   onContinue?: () => void
   continuing?: boolean
+  /** 点击「回忆到的某条记忆」→ 跳到记忆页并聚焦该节点。 */
+  onOpenMemoryNode?: (nodeId: string) => void
 }
 
 /**
@@ -33,7 +35,8 @@ export function MessageList({
   onToggleWorkLog,
   onDecideTool,
   onContinue,
-  continuing
+  continuing,
+  onOpenMemoryNode
 }: MessageListProps): React.JSX.Element {
   const { messages } = run
 
@@ -51,6 +54,7 @@ export function MessageList({
         onDecide={onDecideTool}
         onContinue={onContinue}
         continuing={continuing}
+        onOpenMemoryNode={onOpenMemoryNode}
       />
 
       {messages.map((m) => (

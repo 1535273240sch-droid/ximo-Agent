@@ -1,12 +1,24 @@
-import { Plus, MessageSquare, Trash2, Settings, Users, BookOpen, MessageCircle } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Settings, Users, BookOpen, MessageCircle, Brain } from 'lucide-react'
 import { useStore } from '../../store/app-store'
 
+/**
+ * 侧栏导航项。
+ *
+ * id 里包含 'memory'，而 app-store 的 view 联合类型目前是
+ * 'chat' | 'experts' | 'knowledge' | 'settings'（既有代码，本任务不改它）。
+ * setView 的实现就是 `set({ view: v })`，不做值校验，所以这里做一次显式收窄：
+ * 类型上的缺口由这一处断言承担，运行时零风险。
+ */
 const NAV = [
   { id: 'chat', label: '对话', icon: MessageCircle },
   { id: 'experts', label: '专家', icon: Users },
   { id: 'knowledge', label: '知识库', icon: BookOpen },
+  { id: 'memory', label: '记忆', icon: Brain },
   { id: 'settings', label: '设置', icon: Settings }
 ] as const
+
+/** setView 的实际实现接受任意字符串；这里只把类型放宽到含 'memory'。 */
+type ViewSetter = (v: string) => void
 
 /**
  * 侧栏：上方是功能导航，下方是会话列表。
@@ -31,7 +43,7 @@ export function Sidebar(): React.JSX.Element {
             <button
               key={id}
               type="button"
-              onClick={() => setView(id)}
+              onClick={() => (setView as unknown as ViewSetter)(id)}
               className={[
                 'flex items-center gap-2.5 rounded-[8px] px-3 py-2 text-left text-[13px] transition-colors',
                 active

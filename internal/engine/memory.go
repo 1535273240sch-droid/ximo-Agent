@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/ximo888ok-netizen/ximo-agent/internal/agent"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/ports"
+	"github.com/ximo888ok-netizen/ximo-agent/internal/types"
 )
 
 // MemoryTurn 是一次已完成 run 的可抽取内容。
@@ -34,6 +36,28 @@ type MemoryTurn struct {
 type MemoryPort interface {
 	Recall(ctx context.Context, query string) string
 	Remember(turn MemoryTurn)
+}
+
+// MemoryRecallItem 是一条被召回的长期记忆（结构化形态）。
+//
+// 只带 id / 正文 / via 三样，形状与 types.EventMemoryRecalled 的载荷一致
+// （audit 4.5 第 7 条：{count, items:[{id,text,via}]}）。via 是"为什么想起它"
+// 的路径描述，种子为 "seed"。
+type MemoryRecallItem struct {
+	ID   string
+	Text string
+	Via  string
+}
+
+// MemoryRecallReporter 是 MemoryPort 的**可选**扩展：能给出结构化召回条目的
+// 实现额外满足它。
+//
+// 为什么是可选接口而不是给 MemoryPort 加方法：MemoryPort 的既有实现（以及测试
+// 替身）不该为了一个"展示层"的需求被迫实现新方法；而且不是每个后端都能说清
+// "经由哪条路径想起的"。引擎用类型断言探测它——与 Recoverer / ToolDecider 的
+// 能力探测完全同一条思路：没有该能力时退化成只有文本，行为与从前逐字节一致。
+type MemoryRecallReporter interface {
+	RecallDetailed(ctx context.Context, query string) (text string, items []MemoryRecallItem)
 }
 
 // injectMemoryMessage 在会话开头插入一条独立的记忆 system 消息。
@@ -75,6 +99,62 @@ func (e *Engine) recallMemory(ctx context.Context, prompt string) string {
 		return ""
 	}
 	return e.deps.Memory.Recall(ctx, prompt)
+}
+
+// recallMemoryDetailed 是 recallMemory 的结构化版本：端口实现了
+// MemoryRecallReporter 时同时拿到召回条目，否则退化成只有文本、没有条目。
+//
+// 它永不返回错误，理由与 MemoryPort 的签名约定相同：调用点在 run 的入口，
+// 那里没有"记忆出问题该怎么办"的答案。
+func (e *Engine) recallMemoryDetailed(ctx context.Context, prompt string) (string, []MemoryRecallItem) {
+	if e == nil || e.deps.Memory == nil {
+		return "", nil
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return "", nil
+	}
+	if reporter, ok := e.deps.Memory.(MemoryRecallReporter); ok {
+		return reporter.RecallDetailed(ctx, prompt)
+	}
+	return e.deps.Memory.Recall(ctx, prompt), nil
+}
+
+// emitMemoryRecalled 把本次召回的条目写成 durable 事件，供 Work Log 展示
+// 「回忆 N 条记忆」并解释每条为什么被想起。
+//
+// 事件只是展示层的增强，不是 run 的前提：写日志失败时静默跳过（不改变 run 的
+// 任何状态），这与"记忆不可用不阻塞 run"的既有约定一致。
+//
+// 正文再次过 types.RedactString：记忆内容在写入时已经脱敏过一次，但事件是另一
+// 条出站路径（会进事件日志、outbox、IPC），出口处再脱敏一次是纵深防御，不是
+// 冗余——任何一条新的出站路径都不该假设上游一定干净。
+func (e *Engine) emitMemoryRecalled(ctx context.Context, runID, sessionID string, items []MemoryRecallItem) {
+	if e == nil || e.deps.Events == nil || len(items) == 0 {
+		return
+	}
+	list := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		list = append(list, map[string]any{
+			"id":   it.ID,
+			"text": types.RedactString(it.Text),
+			"via":  it.Via,
+		})
+	}
+	ev := types.Event{
+		RunID:     runID,
+		SessionID: sessionID,
+		Type:      types.EventMemoryRecalled,
+		State:     types.StateQueued,
+		Timestamp: time.Now(),
+		Data:      map[string]any{"count": len(list), "items": list},
+	}
+	seq, err := e.deps.Events.Append(ctx, runID, ev)
+	if err != nil {
+		return
+	}
+	ev.Seq = seq
+	e.enqueueOutbox(ctx, ev)
+	e.coalescer.Publish(ev)
 }
 
 // rememberTurn 把一轮完成的对话投递给记忆端口。

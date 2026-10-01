@@ -302,6 +302,38 @@ export interface XimoBridge {
   /** 向服务商查询可用模型列表。base_url 非空时按该地址查询（表单当前值）。 */
   listModels(opts?: { base_url?: string }): Promise<ModelListPayload>
 
+  // --- 记忆图（P1-c，审核文档 4.9）-----------------------------------------
+  //
+  // 帧名与 internal/ipc/protocol.go 的 TypeMemory* 一一对应；载荷类型是
+  // internal/ipcapi/wire.go 里那组 DTO 的逐字复刻。记忆页与 run 生命周期无关，
+  // 所以走 system.memory.* 命名空间，不挂在 run 上。
+
+  /** 取一个子图（分页 / 过滤 / 邻域 / 搜索）。 */
+  memoryGraph(req: MemoryGraphRequest): Promise<MemoryGraph>
+  /** 取单个节点的完整详情（含完整正文、相邻边、邻居、最近召回记录）。 */
+  memoryNode(id: string): Promise<MemoryNodeDetail>
+  /** 改标题 / 正文 / 重要度 / 置顶 / 状态；返回更新后的详情。 */
+  memoryUpdateNode(upd: MemoryNodeUpdate): Promise<MemoryNodeDetail>
+  /** 硬删除节点及其所有边（「遗忘」，不可撤销）。 */
+  memoryDeleteNode(id: string): Promise<void>
+  /** 显式建立一条边；已存在则更新权重。 */
+  memoryLink(link: MemoryLink): Promise<MemoryGraphMutation>
+  /** 手动触发一次「睡眠整理」。 */
+  memoryConsolidate(): Promise<MemoryGraphMutation>
+  /** 导出全部记忆（可读 JSON）。 */
+  memoryExport(): Promise<MemoryExport>
+  /** 导入一份导出文件；按内容哈希幂等合并。 */
+  memoryImport(doc: MemoryExport): Promise<MemoryGraphMutation>
+  /** 计数快照与当前后端名。 */
+  memoryStats(): Promise<MemoryStats>
+  /**
+   * 清空全部记忆（不可撤销）。
+   *
+   * confirm 必须是字面量 'DELETE_ALL'，与后端 ipcapi.MemoryClearPayload 一致；
+   * 传其它值后端会明确拒绝，前端这里也做一次同样的校验（早失败早提示）。
+   */
+  memoryClear(confirm: string): Promise<MemoryGraphMutation>
+
   /** 订阅事件推送；返回取消订阅函数。 */
   onEvent(handler: (ev: DurableEvent) => void): () => void
   /** 订阅后端状态变化。 */
@@ -417,6 +449,239 @@ export interface SubAgentSettingsPayload {
   by_division: Record<string, string[]>
   /** 专家 ID → 候选 ID 顺序（优先级高于分类）。 */
   by_expert: Record<string, string[]>
+}
+
+// ---------------------------------------------------------------------------
+// 记忆图（P1-c，审核文档 4.9）
+// ---------------------------------------------------------------------------
+//
+// 这一组类型是 Go 侧 internal/types/t02_memory_graph.go 的逐字复刻：ipcapi 直接
+// 复用那份 DTO 作为帧载荷（不再抄一层），所以 JSON tag 就是线上字段名。
+//
+// 为什么强调「逐字」：字段名抄错不会有任何编译错误，也不会在单测里暴露（前端
+// 用自己构造的数据测），只会在真机上表现为「记忆页永远是空的」——最难排查的一类
+// 故障。因此这里保留 Go 侧的注释语义，便于逐字段对照。
+
+/** 记忆节点的 kind，与 mem_nodes.kind 的 CHECK 约束一致。 */
+export type MemoryKind = 'fact' | 'entity' | 'episode' | 'procedure' | 'topic'
+
+/** 记忆节点的 status。 */
+export type MemoryStatus = 'active' | 'superseded' | 'archived'
+
+/** 图的边关系，与 mem_edges.rel 的 CHECK 约束一致。 */
+export type MemoryRel =
+  | 'mentions'
+  | 'related'
+  | 'part_of'
+  | 'causes'
+  | 'derived_from'
+  | 'supersedes'
+  | 'contradicts'
+  | 'same_topic'
+  | 'used_with'
+
+/** 全部 kind，供界面筛选下拉使用（顺序与 Go 侧 AllMemoryKinds 一致）。 */
+export const ALL_MEMORY_KINDS: MemoryKind[] = ['fact', 'entity', 'episode', 'procedure', 'topic']
+
+/** 全部 rel，供手动连线下拉与校验使用（顺序与 Go 侧 AllMemoryRels 一致）。 */
+export const ALL_MEMORY_RELS: MemoryRel[] = [
+  'mentions',
+  'related',
+  'part_of',
+  'causes',
+  'derived_from',
+  'supersedes',
+  'contradicts',
+  'same_topic',
+  'used_with'
+]
+
+/** 一次子图查询，对应 Go 的 MemoryGraphRequest。 */
+export interface MemoryGraphRequest {
+  /** 返回的最大节点数（0 表示由后端给一个有界默认值）。 */
+  limit?: number
+  /** 跳过的节点数，按 kind/importance 稳定排序，用于翻页。 */
+  offset?: number
+  /** 只取这些 kind；空表示全部。 */
+  kinds?: MemoryKind[]
+  /** 是否包含已归档节点。 */
+  include_archived?: boolean
+  /** 非空时只返回词法命中的节点及其直接关联。 */
+  query?: string
+  /** 非空时以该节点为中心取邻域。 */
+  center_on?: string
+  /** CenterOn 的邻域跳数（默认 1）。 */
+  depth?: number
+}
+
+/** 图视图里的一个节点，对应 Go 的 MemoryGraphNode。 */
+export interface MemoryGraphNode {
+  id: string
+  kind: string
+  title?: string
+  content_preview?: string
+  importance: number
+  pinned: boolean
+  status: string
+  source_run?: string
+  use_count: number
+  /** 节点的度；图视图据此（与 importance 一起）决定圆圈大小。 */
+  degree: number
+  created_at: number
+  /** 0 表示从未被采用。 */
+  last_used?: number
+}
+
+/**
+ * 图视图里的一条有向边，对应 Go 的 MemoryGraphEdge。
+ *
+ * 渲染粗细必须用 effective_weight 而不是 weight：一条 45 天前用过、实际关联
+ * 已经很弱的边，若按原始权重画，看起来仍然和刚建立时一样粗——那是在骗用户。
+ */
+export interface MemoryGraphEdge {
+  src: string
+  dst: string
+  rel: string
+  /** 原始权重。 */
+  weight: number
+  /** 惰性衰减后的当前强度。 */
+  effective_weight: number
+  fire_count?: number
+}
+
+/** 一次子图查询的结果，对应 Go 的 MemoryGraph。 */
+export interface MemoryGraph {
+  nodes: MemoryGraphNode[]
+  edges: MemoryGraphEdge[]
+  /** 符合条件的节点总数（不受 limit 影响）。 */
+  total: number
+  /** 结果被 limit 截断。 */
+  truncated?: boolean
+}
+
+/** 一条召回记录：这个节点什么时候被想起过、经由什么路径。 */
+export interface MemoryRecallEntry {
+  run_id: string
+  via?: string
+  used: boolean
+  ts: number
+}
+
+/** 一个节点的完整详情，对应 Go 的 MemoryNodeDetail。 */
+export interface MemoryNodeDetail {
+  node: MemoryGraphNode
+  /** 完整正文（列表里只有预览）。 */
+  content?: string
+  edges: MemoryGraphEdge[]
+  neighbors: MemoryGraphNode[]
+  recalls?: MemoryRecallEntry[]
+}
+
+/**
+ * 改一个节点的可变字段，对应 Go 的 MemoryNodeUpdate。
+ *
+ * undefined 表示「不改」——刻意用可选字段而不是零值：把「用户没动这个字段」与
+ * 「用户想把它置空」混为一谈，会静默清掉用户的数据。
+ */
+export interface MemoryNodeUpdate {
+  node_id: string
+  title?: string
+  content?: string
+  importance?: number
+  pinned?: boolean
+  status?: MemoryStatus
+}
+
+/** 一条待建立的边，对应 Go 的 MemoryLink。 */
+export interface MemoryLink {
+  src: string
+  dst: string
+  /** 空值表示 related。 */
+  rel?: MemoryRel
+  weight?: number
+}
+
+/** 写操作的结果，对应 Go 的 MemoryGraphMutation。 */
+export interface MemoryGraphMutation {
+  ok: boolean
+  /** 受影响的节点/边数量，按操作含义解释。 */
+  affected?: number
+  notes?: string[]
+  stats?: MemoryStats
+}
+
+/**
+ * 记忆后端的计数快照，对应 Go 的 MemoryStats。
+ *
+ * 注意 recall_calls 等字段在 Go 侧是 uint64；正常使用量级远小于 2^53，
+ * 按 number 处理不会失真。
+ */
+export interface MemoryStats {
+  user_id?: string
+  nodes: number
+  edges: number
+  recall_calls: number
+  recall_errors: number
+  recall_chars: number
+  bg_dropped: number
+  consolidations: number
+  merged_facts: number
+  archived_nodes: number
+  topics_created: number
+  last_error?: string
+  last_error_at?: number
+  /** 当前生效的后端名（synapse/embedded/mem0）。 */
+  backend?: string
+  enabled: boolean
+}
+
+/** 导出文件里的一个节点（含完整正文），对应 Go 的 MemoryExportNode。 */
+export interface MemoryExportNode {
+  id: string
+  kind: string
+  title?: string
+  content: string
+  importance: number
+  pinned: boolean
+  status: string
+  source_run?: string
+  use_count: number
+  created_at: number
+}
+
+/** 一次完整导出，对应 Go 的 MemoryExport。 */
+export interface MemoryExport {
+  version: number
+  exported_at: number
+  user_id?: string
+  nodes: MemoryExportNode[]
+  edges: MemoryGraphEdge[]
+}
+
+/**
+ * 记忆页的本地设置。
+ *
+ * 为什么放在前端 localStorage 而不是后端配置：总开关/自动抽取/后台整理三项最终
+ * 由后端配置生效，但「嵌入模型」是可选且可能不存在的服务；这里存的是界面侧的
+ * 偏好快照，随配置一起提交时以后端返回为准。
+ */
+export interface MemorySettings {
+  /** 总开关：关闭后不再召回、不再写入。 */
+  enabled: boolean
+  /** 允许从对话中自动抽取事实。 */
+  autoExtract: boolean
+  /** 允许后台「睡眠整理」。 */
+  autoConsolidate: boolean
+  /** 嵌入模型名；空表示未配置。 */
+  embeddingModel: string
+}
+
+/** 记忆页的默认设置。 */
+export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {
+  enabled: true,
+  autoExtract: true,
+  autoConsolidate: true,
+  embeddingModel: ''
 }
 
 declare global {

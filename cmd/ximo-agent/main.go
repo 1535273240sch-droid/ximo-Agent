@@ -31,7 +31,7 @@ import (
 // exact failure that made `ximo-agent.exe --version` disagree with the release
 // tag. Keep them exported and keep the ldflags spelling in sync.
 var (
-	Version   = "v2.3.0"
+	Version   = "v2.4.0"
 	gitCommit = "dev"
 	buildTime = "unknown"
 )
@@ -343,6 +343,11 @@ func runEngine(cfg *config.Config, endpoint string) {
 	// 密钥只写不读——写入即交给平台安全存储（Windows DPAPI），查询只回状态。
 	admin := ipcapi.NewAdminService(app.Secrets(), app)
 	admin.Register(srv)
+
+	// 记忆图（P1-c，审核文档 4.9）：记忆页的读写面。
+	// 未启用图记忆后端时 app.MemoryGraph() 返回 nil，服务照常注册——每个帧
+	// 返回「本装配没有记忆能力」的明确错误，而不是静默成功。
+	ipcapi.NewMemoryService(app.MemoryGraph()).Register(srv)
 
 	// 3. 启动时先自行恢复一次：即使 Supervisor 没发 resume 帧（例如 Engine 是
 	//    被手动启动的），崩溃前未完成的 run 也应当被继续推进。
