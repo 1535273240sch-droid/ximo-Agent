@@ -140,8 +140,8 @@ func (r *Registry) rebuild(custom []Expert) {
 // 失效也就没有意义。
 //
 // 缓存判据是 r.all != nil（rebuild 必然写入非 nil 切片），失效由 SaveCustom /
-// DeleteCustom 显式完成：只有这两个入口能改 customStore，所以不存在外部写入
-// 导致缓存过期的问题。
+// DeleteCustom 显式完成。前提是**所有写入都走注册表**：存储层只被注册表持有，
+// 谁绕过注册表直接改库，谁的改动就要等下一次失效才可见。
 func (r *Registry) Load() ([]Expert, error) {
 	if err := r.loadBuiltin(); err != nil {
 		return nil, err
