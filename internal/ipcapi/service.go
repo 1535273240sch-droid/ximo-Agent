@@ -34,6 +34,11 @@ type EngineService struct {
 	engine types.Engine
 	// recoverer 是可选的恢复入口；Engine 实现了 types.Recoverer。
 	recoverer types.Recoverer
+	// decider 是可选的工具授权入口（F5）。与 recoverer 同样的可选能力模式：
+	// 只有实现了 types.ToolDecider 的引擎才支持 engine.run.decide，否则该帧
+	// 返回明确错误，而不是静默成功——静默成功会让界面以为已经批准、
+	// 而 run 永远停在 waiting_user。
+	decider types.ToolDecider
 	// eventsLimit 限制单次事件拉取的条数，防止一次请求把大 run 的全部历史
 	// 灌进内存（UI 应以返回的 seq 续拉）。
 	eventsLimit int
@@ -62,6 +67,10 @@ func NewEngineService(eng types.Engine, opts ...ServiceOption) (*EngineService, 
 	if r, ok := eng.(types.Recoverer); ok {
 		s.recoverer = r
 	}
+	// 同上：工具授权是可选能力，未实现的引擎让该帧明确失败。
+	if d, ok := eng.(types.ToolDecider); ok {
+		s.decider = d
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -75,6 +84,42 @@ func (s *EngineService) Register(srv *ipc.Server) {
 	srv.RegisterHandler(ipc.TypeRunStatus, s.handleStatus)
 	srv.RegisterHandler(ipc.TypeEventStream, s.handleEvents)
 	srv.RegisterHandler(ipc.TypeRunResume, s.handleResume)
+	srv.RegisterHandler(ipc.TypeRunDecide, s.handleDecide)
+}
+
+// handleDecide 处理工具授权决定：engine.run.decide（F5）。
+//
+// 这是「Agent 想执行需确认的工具时用户至少有个按钮可点」这条红线的服务端
+// 一半：没有它，auto_mode=safe（默认）下 run 会永久停在 waiting_user。
+func (s *EngineService) handleDecide(ctx context.Context, req *ipc.Frame) (*ipc.Frame, error) {
+	if s.decider == nil {
+		return ErrorFrame(ipc.TypeRunDecide, req,
+			fmt.Errorf("engine does not support tool decisions in this build")), nil
+	}
+	env, err := decodeEnvelope(req)
+	if err != nil {
+		return ErrorFrame(ipc.TypeRunDecide, req, err), nil
+	}
+	var p DecidePayload
+	if err := env.Decode(&p); err != nil {
+		return ErrorFrame(ipc.TypeRunDecide, req, err), nil
+	}
+	if p.RunID == "" {
+		return ErrorFrame(ipc.TypeRunDecide, req, fmt.Errorf("run_id is required")), nil
+	}
+	if p.CallID == "" {
+		return ErrorFrame(ipc.TypeRunDecide, req, fmt.Errorf("call_id is required")), nil
+	}
+	if err := s.decider.Decide(ctx, p.RunID, p.CallID, p.Approve, p.Remember); err != nil {
+		return ErrorFrame(ipc.TypeRunDecide, req, err), nil
+	}
+	out, err := EnvelopeFrom(ipc.TypeRunDecide, DecideResultPayload{
+		RunID: p.RunID, CallID: p.CallID, Approve: p.Approve, Ok: true,
+	}, FrameOpts{RequestID: req.Header.RequestID, SessionID: req.Header.SessionID})
+	if err != nil {
+		return ErrorFrame(ipc.TypeRunDecide, req, err), nil
+	}
+	return out, nil
 }
 
 // handleSubmit 处理提交请求：engine.run.submit。
@@ -416,6 +461,13 @@ func (c *Client) Events(ctx context.Context, runID string, afterSeq uint64) (Eve
 func (c *Client) Resume(ctx context.Context, runID string) (RecoveryPayload, error) {
 	var out RecoveryPayload
 	err := c.call(ctx, ipc.TypeRunResume, RunIDPayload{RunID: runID}, &out)
+	return out, err
+}
+
+// Decide 提交用户对一次待授权工具调用的批准/拒绝（F5）。
+func (c *Client) Decide(ctx context.Context, p DecidePayload) (DecideResultPayload, error) {
+	var out DecideResultPayload
+	err := c.call(ctx, ipc.TypeRunDecide, p, &out)
 	return out, err
 }
 

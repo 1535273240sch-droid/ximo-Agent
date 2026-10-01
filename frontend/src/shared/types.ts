@@ -148,8 +148,73 @@ export type EventType =
   | 'plan.proposed'
   | 'plan.confirmed'
   | 'plan.rejected'
+  // 闭环报告（F2/F4）：每个终态路径恰好一次，且先于终态迁移发出。
+  | 'run.closure'
+  // 长期记忆召回（记忆重设计）：本次 run 点亮了哪些记忆、经由什么路径。
+  | 'memory.recalled'
   // 允许后端先于前端新增事件类型而不破坏编译。
   | (string & {})
+
+/**
+ * 闭环结论取值，对应后端 types.Closure* 常量。
+ *
+ * closed      —— 全部适用检查通过；
+ * partial     —— 任务结束了，但有确凿的未完成：轮次预算耗尽、答案被截断、
+ *                待办未做完、或某个工具最后一次调用仍失败；
+ * needs_user  —— run 停在人工决定上（工具授权 / 计划确认 / 崩溃恢复裁决）；
+ * failed      —— 根本没有可用答案。
+ */
+export type ClosureVerdict = 'closed' | 'partial' | 'needs_user' | 'failed'
+
+/** 一条闭环检查，对应后端 types.ClosureCheck。 */
+export interface ClosureCheck {
+  /** 稳定机器名，如 answer_nonempty。 */
+  id: string
+  /** 界面显示的一行文案。 */
+  label: string
+  pass: boolean
+  /** 失败原因（或补充说明）。 */
+  note?: string
+}
+
+/** 闭环报告，对应后端 types.RunClosureReport。 */
+export interface ClosureReport {
+  verdict: ClosureVerdict
+  checks: ClosureCheck[]
+  /** verdict !== 'closed' 的便捷镜像。 */
+  incomplete?: boolean
+}
+
+/** 待用户决定的工具授权请求（F5），由 tool_call.permission_required 事件写入。 */
+export interface ToolPermissionRequest {
+  callId: string
+  toolName: string
+  /** 参数摘要，用于告诉用户「将要执行什么」。 */
+  args?: Record<string, unknown>
+  /** 后端给出的人类可读说明。 */
+  message?: string
+  /** 用户已提交决定、正在等待后端接受。 */
+  deciding?: boolean
+  /** 提交决定失败的原因，供用户重试。 */
+  decisionError?: string
+}
+
+/** 工具授权决定载荷，对应后端 ipcapi.DecidePayload。 */
+export interface DecidePayload {
+  run_id: string
+  call_id: string
+  approve: boolean
+  /** 'once'（默认）| 'session'。 */
+  remember?: string
+}
+
+/** 工具授权决定结果，对应后端 ipcapi.DecideResultPayload。 */
+export interface DecideResultPayload {
+  run_id: string
+  call_id: string
+  approve: boolean
+  ok: boolean
+}
 
 /** 事件拉取结果，对应 ipcapi.EventsPayload。 */
 export interface EventsPayload {
@@ -215,6 +280,15 @@ export interface XimoBridge {
    * 继续推进该 run（确认则开始执行，否决则重新产出计划并再次等待）。
    */
   confirmPlan(runId: string, approved: boolean): Promise<{ run_id: string; approved: boolean; ok: boolean }>
+
+  /**
+   * 批准或拒绝一次待授权的工具调用（F5）。
+   *
+   * 与 confirmPlan 的区别：它回答的是「这一次工具调用能不能执行」，
+   * 不是「这份计划行不行」。approve=false 不是错误 —— 后端会把
+   * 「用户拒绝执行」作为工具结果喂回模型，让它换一条路继续。
+   */
+  decide(payload: DecidePayload): Promise<DecideResultPayload>
 
   /** 查询 API 密钥配置状态（不含明文）。 */
   secretStatus(): Promise<SecretStatusPayload>

@@ -1,0 +1,5 @@
+allowBuilds:
+  # esbuild 的 postinstall 负责落地 esbuild 可执行文件，vite/vitest 需要它。
+  esbuild: true
+  # electron 的 postinstall 只下载 ~100MB 二进制，typecheck/单测都不需要。
+  electron: false

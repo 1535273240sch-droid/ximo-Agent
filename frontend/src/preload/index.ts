@@ -13,6 +13,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/channels'
 import type {
   BackendStatus,
+  DecidePayload,
+  DecideResultPayload,
   DurableEvent,
   EventsPayload,
   HandlePayload,
@@ -50,6 +52,11 @@ const bridge: XimoBridge = {
     approved: boolean
   ): Promise<{ run_id: string; approved: boolean; ok: boolean }> =>
     ipcRenderer.invoke(IPC.PlanConfirm, runId, approved),
+
+  // 工具授权（F5）：批准/拒绝一次待确认的工具调用。载荷字段与后端
+  // ipcapi.DecidePayload 一一对应，前端不额外解释它。
+  decide: (payload: DecidePayload): Promise<DecideResultPayload> =>
+    ipcRenderer.invoke(IPC.RunDecide, payload),
 
   secretStatus: (): Promise<SecretStatusPayload> => ipcRenderer.invoke(IPC.SecretStatus),
 

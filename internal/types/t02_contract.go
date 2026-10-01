@@ -68,6 +68,36 @@ type Recoverer interface {
 	RecoverForIPC(ctx context.Context) ([]RecoveryPlan, error)
 }
 
+// ToolDecider is the optional tool-permission surface (F5).
+//
+// It is deliberately a separate optional interface, not a method on Engine, for
+// three reasons:
+//
+//   - Engine's method set is the cross-task contract; adding to it would break
+//     every existing implementation and fake at compile time, which the audit's
+//     "contract may only be appended" rule forbids.
+//   - Not every engine build has a permission layer wired in, and an engine
+//     without one must reject the frame loudly rather than accept a decision it
+//     cannot honour.
+//   - It keeps the privilege boundary visible: a caller holding only an Engine
+//     cannot approve tool execution.
+//
+// Decide answers "may this specific tool call proceed?", not "is this plan
+// acceptable" (that is ConfirmPlan). The two are different questions about
+// different objects, and conflating them would let a plan approval silently
+// authorise a tool call the user never saw.
+type ToolDecider interface {
+	// Decide records the user's answer for one parked tool call and resumes the
+	// run when the answer unblocks it.
+	//
+	// approve=false is not an error: the loop feeds "the user declined" back to
+	// the model as a tool result so it can choose another approach.
+	//
+	// remember is "" / "once" for a single call, or "session" to approve
+	// further calls of the same kind within the session.
+	Decide(ctx context.Context, runID, callID string, approve bool, remember string) error
+}
+
 // RecoveryPlan is re-exported in a shape the IPC boundary can carry.
 //
 // It is declared here, rather than only in internal/engine, because task 01

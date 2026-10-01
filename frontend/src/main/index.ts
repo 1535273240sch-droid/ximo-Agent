@@ -17,6 +17,8 @@ import { BackendManager } from './backend-manager'
 import { IPC } from '../shared/channels'
 import type {
   BackendStatus,
+  DecidePayload,
+  DecideResultPayload,
   DurableEvent,
   EventsPayload,
   HandlePayload,
@@ -155,6 +157,16 @@ function registerIpcHandlers(): void {
         approved: boolean
         ok: boolean
       }
+    }
+  )
+
+  // 工具授权（F5）：批准/拒绝一次待确认的工具调用。载荷原样透传给后端，
+  // 字段名与 ipcapi.DecidePayload 一致；后端逐项校验 run 状态与该 call_id
+  // 是否真的在待授权集合中，前端不做信任假设。
+  ipcMain.handle(
+    IPC.RunDecide,
+    async (_e, payload: DecidePayload): Promise<DecideResultPayload> => {
+      return (await requireClient().decide(payload)) as DecideResultPayload
     }
   )
 

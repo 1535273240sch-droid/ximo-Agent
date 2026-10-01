@@ -109,6 +109,17 @@ type ToolRequest struct {
 	// Resource is the resource class the call must lease, derived by the
 	// scheduler from the tool name.
 	Resource types.ResourceClass
+	// Confirmed reports that the user explicitly approved THIS call after it
+	// came back as requires-confirmation (F5).
+	//
+	// It is a separate field rather than a raised AutoModeLevel on purpose: an
+	// approval authorizes one call, whereas a mode change would authorize every
+	// call of that class. A deny rule must still win over this flag — the
+	// permission layer decides, this only removes the "ask" step.
+	Confirmed bool
+	// ConfirmedForSession widens Confirmed to "the user allowed this kind of
+	// call for the rest of the session" (the decide payload's remember=session).
+	ConfirmedForSession bool
 }
 
 // ToolRuntime executes tool calls (task 04). It is the port the scheduler
@@ -274,6 +285,15 @@ type ProviderResponse struct {
 	// client. v1 uses it to decide whether a dropped connection may be
 	// replayed: replaying after partial output would duplicate it.
 	Emitted bool
+	// Model is the model name actually sent to the provider, after the adapter
+	// applied its default. It is echoed back so the UI can show "this run really
+	// used X" instead of inferring it from the request: the model field leaving
+	// the UI is empty whenever the user chose "follow the global default", and
+	// an empty echo would make the evidence chain unverifiable.
+	//
+	// It is additive: an implementation that leaves it empty behaves exactly as
+	// before (the loop simply omits the field from the round event).
+	Model string
 }
 
 // Usage is normalized token accounting. The two shapes DeepSeek returns

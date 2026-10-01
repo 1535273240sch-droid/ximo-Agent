@@ -279,6 +279,79 @@ type Conversation struct {
 	// toolCallCount totals the tool calls dispatched across the run, used for
 	// the run summary and for metrics.
 	toolCallCount int
+	// Closure accumulates the deterministic evidence the closure report is
+	// built from (F2/F4): the newest todo snapshot, the newest result per tool
+	// target, the newest review verdict and the truncation latch.
+	//
+	// It lives on the Conversation rather than on a side channel because it is
+	// derived from exactly the same stream of observations the conversation is:
+	// a tracker fed from anywhere else could disagree with the message history
+	// the model actually saw.
+	//
+	// It is not part of the crash-recovery snapshot contract: the run record
+	// already carries the closure report of the invocation that produced it,
+	// and a recovered run starts a fresh invocation with a fresh conversation.
+	// Omitting it is a deliberate, documented gap, not an oversight — see the
+	// executor report.
+	Closure types.ClosureTracker
+	// EmptyAnswerRetries counts how many times this run already asked the model
+	// to try again after an empty final answer (F4).
+	EmptyAnswerRetries int
+	// lastClosure is the closure report of the invocation that ended the run.
+	// It is kept on the conversation so LoopResult can carry the exact value the
+	// run.closure event carried, rather than re-deriving a value that could
+	// differ if it were recomputed after the fact.
+	lastClosure types.RunClosureReport
+	// ToolDecisions maps a tool call ID to the user's answer (F5), for the calls
+	// this run is allowed or refused to execute.
+	//
+	// It lives on the conversation because it is per-run state that the loop
+	// reads while observing: putting it on the Loop would make two concurrent
+	// runs share one decision map.
+	ToolDecisions map[string]bool
+}
+
+// toolDecision returns the user's answer for a tool call, if there is one.
+func (c *Conversation) toolDecision(callID string) (bool, bool) {
+	if c == nil || callID == "" || c.ToolDecisions == nil {
+		return false, false
+	}
+	v, ok := c.ToolDecisions[callID]
+	return v, ok
+}
+
+// toolDecisionForSession reports whether the approval for this call was granted
+// for the whole session rather than for this call alone.
+//
+// The engine expresses both with the same value (true) but two different keys:
+// the call ID for a one-off approval, the tool-name key for a session-scoped
+// one. Which key matched is the answer, and it has to be preserved because the
+// two mean different things to the permission layer.
+func (c *Conversation) toolDecisionForSession(call types.ToolCall) bool {
+	return c.toolDecisionKey(ToolNameDecisionKey(call.Name))
+}
+
+// toolDecisionKey reports whether a raw decision key is present and true.
+func (c *Conversation) toolDecisionKey(key string) bool {
+	if c == nil || key == "" || c.ToolDecisions == nil {
+		return false
+	}
+	return c.ToolDecisions[key]
+}
+
+// FoldToolDecisions records the decisions handed to this invocation on the
+// conversation, so observe() can consult them per call. The caller clears its
+// own map afterwards: an answer is consumed once.
+func (c *Conversation) FoldToolDecisions(in map[string]bool) {
+	if c == nil || len(in) == 0 {
+		return
+	}
+	if c.ToolDecisions == nil {
+		c.ToolDecisions = make(map[string]bool, len(in))
+	}
+	for k, v := range in {
+		c.ToolDecisions[k] = v
+	}
 }
 
 // ToolCallCount reports how many tool calls the run has dispatched.
@@ -350,6 +423,8 @@ func (c *Conversation) Clone() *Conversation {
 	cp.Messages = append([]ports.Message(nil), c.Messages...)
 	cp.Tools = append([]types.ToolDefinition(nil), c.Tools...)
 	cp.Reviews = append([]Review(nil), c.Reviews...)
+	cp.Closure = *c.Closure.Clone()
+	cp.EmptyAnswerRetries = c.EmptyAnswerRetries
 	return cp
 }
 

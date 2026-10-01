@@ -15,12 +15,23 @@
 import { create } from 'zustand'
 import type {
   BackendStatus,
+  ClosureReport,
+  DecidePayload,
   DurableEvent,
   RunState,
   SubmitPayload
 } from '@shared/types'
 import { CLUSTER_MODE_SIZE, isTerminalState } from '@shared/types'
 import type { Expert } from '../components/experts/experts-data'
+import { loadPersistedModel, persistModel } from '../components/chat/ModelPicker'
+import {
+  reduceEvent,
+  type PendingApproval,
+  type RunStep,
+  type StepsState
+} from './steps'
+
+export type { RunStep, StepKind, StepStatus, PendingApproval } from './steps'
 
 /** GO 模式拼进 system_prompt 的固定文案（任务1约定，纯前端拼接）。 */
 const GO_MODE_SYSTEM_PROMPT =
@@ -79,6 +90,28 @@ export interface RunView {
   messages: ChatMessage[]
   /** 尚未匹配到消息的工具调用轨迹。 */
   tools: Record<string, ToolTrace>
+  /**
+   * Work Log 时间线：这次任务的内部工作（规划 / 回忆 / 思考 / 工具 / 复核 /
+   * 续段 / 压缩 / 等待授权），按发生顺序归位。
+   *
+   * 它取代了「tools 字典 + loose 渲染」：工具不再堆在对话最底部，而是落在
+   * 产生它的那一轮回答上方（C6）。
+   */
+  steps: RunStep[]
+  /** 闭环结论（run.closure 事件）。终态之前发出，因此一定会到界面。 */
+  closure?: ClosureReport
+  /**
+   * 本次 run 实际使用的模型（后端在 round.completed / final_answer 里回显）。
+   * 手选模型走完全链路后，这里是用户可见的证据。
+   */
+  modelUsed?: string
+  /** 停在等待授权的工具调用（F5）。存在时时间线内联显示批准 / 拒绝。 */
+  pendingApproval?: PendingApproval
+  /**
+   * 用户手动开合过 Work Log 后的展开态。事件更新不得覆盖它——否则用户刚点开
+   * 就被下一个事件折叠回去（审核文档 2.2 的「用户手动点过：以用户为准」）。
+   */
+  workLogOpen?: boolean
   startedAt: number
   updatedAt: number
   /**
@@ -149,6 +182,15 @@ interface StoreState {
   cancelActive: () => Promise<void>
   /** 确认或否决某 run 的计划（任务4）。 */
   confirmPlan: (runId: string, approved: boolean) => Promise<void>
+  /**
+   * 批准或拒绝一次待授权的工具调用（F5）。
+   *
+   * 与 confirmPlan 的区别：它回答的是「这一次工具调用能不能执行」。approve=false
+   * 不是错误——后端会把「用户拒绝执行」作为工具结果喂回模型。
+   */
+  decideTool: (runId: string, callId: string, approve: boolean) => Promise<void>
+  /** 用户手动开合某 run 的 Work Log；事件更新不得覆盖。 */
+  setWorkLogOpen: (runId: string, open: boolean) => void
   applyEvent: (ev: DurableEvent) => void
   setRunFromStatus: (payload: {
     run_id: string
@@ -303,8 +345,17 @@ export const useStore = create<StoreState>((set, get) => ({
   setGoMode: (v) => set({ goMode: v }),
   clusterMode: false,
   setClusterMode: (v) => set({ clusterMode: v }),
-  model: undefined,
-  setModel: (m) => set({ model: m }),
+  /**
+   * 选择本次使用的模型（任务1）。undefined 表示跟随设置页的全局默认。
+   *
+   * 同时写入 localStorage：重启应用后仍保留上次选择（审核文档 1A 第 3 条）。
+   * 持久化逻辑放在 ModelPicker 里（那一侧才知道模型列表），这里只负责写。
+   */
+  model: loadPersistedModel(),
+  setModel: (m) => {
+    persistModel(m)
+    set({ model: m })
+  },
   selectedExpert: undefined,
   setSelectedExpert: (e) => set({ selectedExpert: e }),
 
@@ -320,24 +371,30 @@ export const useStore = create<StoreState>((set, get) => ({
     // 输入框选项统一在这里组装（此前在 Composer 内）：空会话的「建议探索
     // 场景」按钮同样走 submit —— 若不在此处合并，场景提交会绕过计划模式等
     // 开关（界面表现为"开了计划却不出确认卡片"）。
-    // 规则：plan_mode 与 expert_id 互斥 —— 专家直连路径自带方案阶段、会忽略
-    // 计划模式（后端有测试固化的组合规则）。
-    let effective = opts
-    if (!effective) {
-      const st = get()
-      const built: Partial<SubmitPayload> = {}
-      if (st.model) built.model = st.model
-      if (st.goMode) built.system_prompt = buildGoSystemPrompt()
-      if (st.planMode && !st.selectedExpert) built.plan_mode = true
-      if (st.selectedExpert) built.expert_id = st.selectedExpert.id
-      // 集群模式与手选专家互斥：专家是单点执行，集群是"让引擎自动组队"。
-      // 两者同时存在时后端以 ExpertID 优先，所以这里干脆不发集群字段 ——
-      // 否则会出现"开了集群却在跑单个专家"的迷惑组合。
-      else if (st.clusterMode) built.cluster_size = CLUSTER_MODE_SIZE
-      effective = Object.keys(built).length > 0 ? built : undefined
-      // 专家绑定是「本次消息」语义：提交后即清空。
-      if (st.selectedExpert) set({ selectedExpert: undefined })
-    }
+    //
+    // 合并规则（审核文档 1A 第 4 条）：**始终**合并 store 与调用方显式传入的
+    // 选项，显式传入的字段优先。此前的写法是 `let effective = opts; if
+    // (!effective) { …合并… }`——只要调用方传了 opts，模型 / 计划 / 专家开关
+    // 会被整体绕过，表现为"选了模型却发的是默认模型"。
+    //
+    // plan_mode 与 expert_id 互斥：专家直连路径自带方案阶段、会忽略计划模式
+    // （后端有测试固化的组合规则）。
+    const st = get()
+    const built: Partial<SubmitPayload> = {}
+    if (st.model) built.model = st.model
+    if (st.goMode) built.system_prompt = buildGoSystemPrompt()
+    if (st.planMode && !st.selectedExpert) built.plan_mode = true
+    if (st.selectedExpert) built.expert_id = st.selectedExpert.id
+    // 集群模式与手选专家互斥：专家是单点执行，集群是"让引擎自动组队"。
+    // 两者同时存在时后端以 ExpertID 优先，所以这里干脆不发集群字段 ——
+    // 否则会出现"开了集群却在跑单个专家"的迷惑组合。
+    else if (st.clusterMode) built.cluster_size = CLUSTER_MODE_SIZE
+    // 显式传入的字段覆盖 store 推导出的字段。
+    const merged: Partial<SubmitPayload> = { ...built, ...(opts ?? {}) }
+    const effective: Partial<SubmitPayload> | undefined =
+      Object.keys(merged).length > 0 ? merged : undefined
+    // 专家绑定是「本次消息」语义：提交后即清空。
+    if (st.selectedExpert) set({ selectedExpert: undefined })
 
     // 没有活跃会话时自动开一个。
     let sessionId = get().activeSessionId
@@ -366,6 +423,7 @@ export const useStore = create<StoreState>((set, get) => ({
           lastSeq: 0,
           messages: [userMsg],
           tools: {},
+          steps: [],
           startedAt: Date.now(),
           updatedAt: Date.now()
         }
@@ -500,6 +558,70 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   /**
+   * 批准或拒绝一次待授权的工具调用（F5）。
+   *
+   * 与 confirmPlan 同构：只把用户的点击转给后端，真正的状态变更由后端继续推进
+   * 该 run 后发出的事件驱动。提交期间把按钮置为等待态，失败时把原因留在卡片上
+   * 供重试。
+   */
+  decideTool: async (runId, callId, approve) => {
+    const view = get().runs[runId]
+    if (!view?.pendingApproval || view.pendingApproval.deciding) return
+    if (view.pendingApproval.callId !== callId) return
+
+    set((st) => {
+      const cur = st.runs[runId]
+      if (!cur?.pendingApproval) return st
+      return {
+        runs: {
+          ...st.runs,
+          [runId]: {
+            ...cur,
+            pendingApproval: { ...cur.pendingApproval, deciding: true, decisionError: undefined }
+          }
+        }
+      }
+    })
+
+    const payload: DecidePayload = { run_id: runId, call_id: callId, approve }
+    try {
+      await window.ximo.decide(payload)
+    } catch (err) {
+      set((st) => {
+        const cur = st.runs[runId]
+        if (!cur?.pendingApproval) return st
+        return {
+          runs: {
+            ...st.runs,
+            [runId]: {
+              ...cur,
+              pendingApproval: {
+                ...cur.pendingApproval,
+                deciding: false,
+                decisionError: (err as Error).message
+              }
+            }
+          }
+        }
+      })
+    }
+  },
+
+  /**
+   * 记录用户手动开合 Work Log。事件更新不得覆盖它。
+   *
+   * 这是审核文档 2.2 的「用户手动点过：以用户为准」：没有这个字段，用户刚展开
+   * 的卡片会被下一个事件立刻折叠回去。
+   */
+  setWorkLogOpen: (runId, open) => {
+    set((st) => {
+      const cur = st.runs[runId]
+      if (!cur) return st
+      return { runs: { ...st.runs, [runId]: { ...cur, workLogOpen: open } } }
+    })
+  },
+
+  /**
    * 吸收一条事件并更新对应的 run。
    *
    * 幂等性：事件按 seq 单调递增到达，重复的（seq <= lastSeq）直接丢弃。
@@ -520,7 +642,8 @@ export const useStore = create<StoreState>((set, get) => ({
         lastSeq: ev.seq > 0 ? ev.seq : view.lastSeq,
         updatedAt: Date.now(),
         messages: [...view.messages],
-        tools: { ...view.tools }
+        tools: { ...view.tools },
+        steps: view.steps ?? []
       }
 
       const data = ev.data ?? {}
@@ -718,6 +841,23 @@ export const useStore = create<StoreState>((set, get) => ({
           // 未知事件类型不改变状态机，但 lastSeq 已经推进，不会重复处理。
           break
       }
+
+      // Work Log 时间线：同一条事件既驱动消息，也驱动步骤（审核文档 2.5）。
+      // 交给纯函数处理的原因有两个：它可以被单测直接断言，以及重连续拉与实时
+      // 推送两条路径必然产生一致的结果。
+      const stepsState: StepsState = reduceEvent(
+        {
+          steps: next.steps ?? [],
+          closure: next.closure,
+          modelUsed: next.modelUsed,
+          pendingApproval: next.pendingApproval
+        },
+        ev
+      )
+      next.steps = stepsState.steps
+      next.closure = stepsState.closure
+      next.modelUsed = stepsState.modelUsed
+      next.pendingApproval = stepsState.pendingApproval
 
       return { runs: { ...st.runs, [ev.runId]: next } }
     })

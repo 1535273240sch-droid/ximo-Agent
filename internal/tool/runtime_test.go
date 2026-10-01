@@ -382,7 +382,13 @@ func TestRuntimePermissionAskFlows(t *testing.T) {
 		t.Fatalf("拒绝后不应执行")
 	}
 
-	// 无确认器 -> fail-closed
+	// 无确认器 -> 不再自行拒绝，而是把「需要人来答」这件事交回调用方（F5）。
+	//
+	// 期望值从 ErrPermissionDenied 改成 ErrNeedsConfirmation 是有意的：把 ask
+	// 报成 deny，会让 Agent 循环以为「这条规则不允许」，于是 auto_mode=safe 下
+	// run 永远停在 waiting_user 而界面上没有任何按钮可点（审核报告 C4）。工具仍然
+	// 没有被执行——fail-closed 的不变量是「没有人批准就不执行」，而不是「必须用
+	// 哪个错误码来拒绝」。
 	f3 := newFixture(t)
 	f3.rt.Confirmer = nil
 	tool3 := &countingTool{def: def}
@@ -392,11 +398,28 @@ func TestRuntimePermissionAskFlows(t *testing.T) {
 		RunID: "run-1", ToolCallID: "call-1", Name: "file_delete",
 		Arguments: map[string]any{"filePath": "/tmp/x"}, Mode: ModeCoding,
 	})
-	if resp3.Success || resp3.ErrorCode != ErrPermissionDenied {
-		t.Fatalf("无确认器必须 fail-closed: %+v", resp3)
+	if resp3.Success || resp3.ErrorCode != ErrNeedsConfirmation {
+		t.Fatalf("无确认器的 ask 必须交回调用方等待人工确认: %+v", resp3)
+	}
+	if !resp3.RequiresConfirmation || resp3.ConfirmationMessage == "" {
+		t.Fatalf("ask 必须带上「需要确认」标记与提示文案，否则引擎无法把它变成等待授权: %+v", resp3)
 	}
 	if tool3.execs.Load() != 0 {
-		t.Fatalf("fail-closed 后不应执行")
+		t.Fatalf("未经批准的 ask 不应执行")
+	}
+	// 批准后放行：这是 F5 闭环的另一半（用户点「批准」→ 重新发起 → 真正执行）。
+	f3.rt.Confirmer = nil
+	f3.resolverAdd(t, "call-2", "file_delete", map[string]any{"filePath": "/tmp/x"})
+	resp4 := f3.rt.Execute(context.Background(), ToolRequest{
+		RunID: "run-1", ToolCallID: "call-2", Name: "file_delete",
+		Arguments: map[string]any{"filePath": "/tmp/x"}, Mode: ModeCoding,
+		Confirmation: Confirmation{Confirmed: true, Scope: ScopeSingle},
+	})
+	if resp4.ErrorCode == ErrNeedsConfirmation || resp4.ErrorCode == ErrPermissionDenied {
+		t.Fatalf("带批准的 ask 必须放行: %+v", resp4)
+	}
+	if tool3.execs.Load() != 1 {
+		t.Fatalf("批准后必须真的执行一次，实际 %d 次", tool3.execs.Load())
 	}
 }
 

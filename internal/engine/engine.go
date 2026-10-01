@@ -119,6 +119,14 @@ type Engine struct {
 	// toolExecs holds the pending executor for a tool-call task, keyed by the
 	// tool call ID the scheduler will dispatch.
 	toolExecs map[string]*toolExec
+	// toolApprovals carries the user's per-call permission approval (F5) from
+	// the dispatcher down to executeTool, keyed by tool call ID.
+	//
+	// Why a side map rather than a field on types.Task: the approval belongs to
+	// this one dispatch, not to the queued task, and types.Task is a frozen
+	// contract. Callers must set it through setToolApproval and the executor
+	// removes it in the same call, so the entry cannot outlive its call.
+	toolApprovals map[string]toolApproval
 	// closed guards shutdown.
 	closed bool
 	// wg tracks run goroutines.
@@ -182,6 +190,22 @@ type runRecord struct {
 	planDecision agent.PlanDecision
 	pendingPlan  string
 	planRevision int
+
+	// ---- F5: tool-authorization prompts ----
+	//
+	// These mirror the plan-mode fields above, and for the same reason: waiting_user
+	// is also how a plan proposal and a crash-recovery adjudication park a run, so
+	// the state alone cannot say whether a tool authorization is outstanding.
+	// pendingToolCalls is the cause-of-park marker for that case, exactly as
+	// planPending is for a plan; toolDecisions is the user's answer, carried across
+	// the park into the next executeRun.
+	//
+	// Guarded by mu, like the plan fields, because a decision arrives from an RPC
+	// goroutine while the run goroutine reads and consumes it. See decide.go for
+	// what survives a crash and what deliberately does not.
+	pendingToolCalls map[string]string // callID -> toolName, parked for authorization
+	toolDecisions    map[string]bool   // callID -> approve, to be consumed once by executeRun
+	sessionApproved  map[string]bool   // toolName -> allowed for this session
 }
 
 // claimExecution takes ownership of the run, reporting false when another
@@ -329,6 +353,7 @@ func New(cfg EngineConfig, deps Dependencies, guard *agent.PanicGuard) (*Engine,
 		runs:            make(map[string]*runRecord),
 		recoverAttempts: make(map[string]int),
 		toolExecs:       make(map[string]*toolExec),
+		toolApprovals:   make(map[string]toolApproval, 4),
 	}
 	e.coalescer = newCoalescer(cfg.Backpressure, e.bus)
 	// The recovery attempt counter has to read engine state, so it is wired
@@ -996,6 +1021,15 @@ func (e *Engine) Close() {
 	case <-ctx.Done():
 	}
 
+	// F5: the goroutines are drained, so no run can be parked on (or waiting to
+	// consume) a tool decision any more. Drop the state rather than leave it
+	// attached to records that outlive the engine lock.
+	e.mu.Lock()
+	for _, rec := range e.runs {
+		rec.clearToolState()
+	}
+	e.mu.Unlock()
+
 	e.mu.Lock()
 	actors := make([]*SessionActor, 0, len(e.sessions))
 	for _, a := range e.sessions {
@@ -1091,6 +1125,18 @@ func (e *Engine) executeRun(ctx context.Context, rec *runRecord) {
 	rec.pendingPlan = ""
 	e.mu.Unlock()
 
+	// F5: pick up the user's answers to tool-authorization prompts. They are
+	// consumed (cleared) here so a later resume of the same run cannot silently
+	// re-apply them: an approval is spent by exactly one execution attempt, which
+	// is what keeps "the user said yes five rounds ago" from authorizing a
+	// different call now.
+	//
+	// Session-level answers are re-applied on top, keyed by tool name: they are
+	// the only ones that survive a re-issued call ID.
+	toolDecisions := rec.takeToolDecisions()
+	rec.applySessionApprovals(toolDecisions)
+	rec.clearPendingToolCalls()
+
 	loop, err := agent.NewLoop(agent.LoopConfig{
 		Config:     e.cfg.Agent,
 		Provider:   e.deps.Provider,
@@ -1127,7 +1173,21 @@ func (e *Engine) executeRun(ctx context.Context, rec *runRecord) {
 		PlanDecision: decision,
 		PendingPlan:  pendingPlan,
 		PlanRevision: revision,
+		// F5: the user's answers to tool-permission prompts, keyed by the call
+		// IDs the previous invocation parked on. An empty map is the normal
+		// case and changes nothing about a run that never hit a prompt.
+		ToolDecisions: toolDecisions,
 	})
+
+	// A run that parked on a tool authorization reports the calls it is waiting
+	// on; recording them here is what lets Decide match a later answer to a
+	// specific call. Every other outcome clears the set, because nothing is
+	// waiting then — a stale entry must never authorize a call that already ran.
+	if res.State == types.StateWaitingUser && len(res.PendingToolCallIDs) > 0 {
+		rec.setPendingToolCalls(res.PendingToolCallIDs, res.PendingToolCallNames)
+	} else {
+		rec.clearPendingToolCalls()
+	}
 
 	// A run that parked on a plan decision leaves the proposal on the record so
 	// the next invocation (the user's answer) knows what it is answering.
@@ -1337,6 +1397,9 @@ func (e *Engine) finishRun(ctx context.Context, rec *runRecord, state types.RunS
 		// run's history would instead grow without bound over a long-lived
 		// process, which is the class of leak the architecture forbids.
 		rec.releaseResources()
+		// F5: a terminal run can authorize nothing any more, so the tool-prompt
+		// state goes with the conversation.
+		rec.clearToolState()
 	}
 	switch {
 	case state == types.StateCompleted:
@@ -1463,8 +1526,15 @@ func (e *Engine) dispatchToolCall(ctx context.Context, rec *runRecord, call type
 		}
 		execCtx, cancel := context.WithTimeout(execCtx, timeout)
 		defer cancel()
-		return e.executeTool(execCtx, rec, call)
+		approval := e.takeToolApproval(call.ID)
+		return e.executeTool(execCtx, rec, call, approval)
 	}}
+
+	// F5: record the user's approval for this call before it is queued, so the
+	// executor (which may run on another goroutine) cannot start without it.
+	if approved, forSession := rec.batchApproval(call); approved || forSession {
+		e.setToolApproval(call.ID, toolApproval{approved: true, forSession: forSession})
+	}
 
 	// Register before submitting: the scheduler may dispatch the task on
 	// another goroutine as soon as Submit returns.
@@ -1549,8 +1619,8 @@ func (e *Engine) markToolStarted(ctx context.Context, rec *runRecord, call types
 // It runs inside the executor closure registered with the scheduler, so by the
 // time it is called the call has already passed admission, the fair queue and
 // its resource lease.
-func (e *Engine) executeTool(ctx context.Context, rec *runRecord, call types.ToolCall) (types.ToolResult, error) {
-	return e.deps.Tools.Execute(ctx, ports.ToolRequest{
+func (e *Engine) executeTool(ctx context.Context, rec *runRecord, call types.ToolCall, approval toolApproval) (types.ToolResult, error) {
+	req := ports.ToolRequest{
 		RunID:      rec.runID(),
 		SessionID:  rec.sessionID(),
 		ToolCallID: call.ID,
@@ -1558,7 +1628,48 @@ func (e *Engine) executeTool(ctx context.Context, rec *runRecord, call types.Too
 		Arguments:  call.Arguments,
 		Timeout:    e.cfg.Agent.ToolExecTimeout,
 		Resource:   scheduler.DefaultToolResource(call.Name),
-	})
+	}
+	// F5: a call the user approved after it came back as requires-confirmation
+	// must reach the permission layer with that approval, or the layer hands the
+	// same call back forever and the run can never leave waiting_user.
+	req.Confirmed = approval.approved
+	req.ConfirmedForSession = approval.forSession
+	return e.deps.Tools.Execute(ctx, req)
+}
+
+// toolApproval is the user's permission answer for one tool call.
+type toolApproval struct {
+	approved   bool
+	forSession bool
+}
+
+// setToolApproval records an approval for a call that is about to be queued.
+func (e *Engine) setToolApproval(callID string, a toolApproval) {
+	if callID == "" {
+		return
+	}
+	e.mu.Lock()
+	if e.toolApprovals == nil {
+		e.toolApprovals = make(map[string]toolApproval, 4)
+	}
+	e.toolApprovals[callID] = a
+	e.mu.Unlock()
+}
+
+// takeToolApproval removes and returns the approval for a call, so it is spent
+// by exactly one execution attempt.
+func (e *Engine) takeToolApproval(callID string) toolApproval {
+	if callID == "" {
+		return toolApproval{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a, ok := e.toolApprovals[callID]
+	if !ok {
+		return toolApproval{}
+	}
+	delete(e.toolApprovals, callID)
+	return a
 }
 
 // ---------------------------------------------------------------------------
@@ -1648,7 +1759,11 @@ type schedulerDispatcher struct {
 // Dispatch implements agent.ToolDispatcher.
 func (d *schedulerDispatcher) Dispatch(ctx context.Context, call types.ToolCall) agent.ToolOutcome {
 	res, err := d.engine.dispatchToolCall(ctx, d.rec, call)
-	return agent.ToolOutcome{Call: call, Result: res, Err: err}
+	oc := agent.ToolOutcome{Call: call, Result: res, Err: err}
+	// A call the permission layer handed back for a human decision becomes the
+	// loop's park-and-ask path instead of a plain tool failure; see decide.go.
+	oc.NeedsConfirmation, oc.ConfirmationMessage = toolOutcomeFor(call, res, err)
+	return oc
 }
 
 // onSchedulerNotification mirrors scheduler lifecycle decisions into the

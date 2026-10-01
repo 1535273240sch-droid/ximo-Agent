@@ -24,8 +24,14 @@ import (
 	"github.com/ximo888ok-netizen/ximo-agent/internal/supervisor"
 )
 
+// Build metadata. These are package-level vars so `-ldflags "-X main.Version=…"`
+// can override them: the release workflow and build.cmd both inject the version
+// that way. They used to be unexported, which made every -X injection a silent
+// no-op and left the binary reporting whatever literal was compiled in — the
+// exact failure that made `ximo-agent.exe --version` disagree with the release
+// tag. Keep them exported and keep the ldflags spelling in sync.
 var (
-	version   = "v2.0.0-alpha"
+	Version   = "v2.3.0"
 	gitCommit = "dev"
 	buildTime = "unknown"
 )
@@ -52,7 +58,7 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("XimoAgent %s (commit: %s, built: %s)\n", version, gitCommit, buildTime)
+		fmt.Printf("XimoAgent %s (commit: %s, built: %s)\n", Version, gitCommit, buildTime)
 		return
 	}
 

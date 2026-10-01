@@ -56,6 +56,11 @@ export const FrameType = {
   EventStream: 'engine.event.stream',
   /** 计划模式：确认/否决执行计划（任务4），对应 Go 的 ipc.TypePlanConfirm。 */
   PlanConfirm: 'engine.plan.confirm',
+  /**
+   * 工具授权：批准/拒绝一次待确认的工具调用（F5），
+   * 对应 Go 的 ipc.TypeRunDecide。
+   */
+  RunDecide: 'engine.run.decide',
   WorkerHealth: 'worker.health',
   WorkerStop: 'worker.stop',
   WorkerExecute: 'worker.execute',

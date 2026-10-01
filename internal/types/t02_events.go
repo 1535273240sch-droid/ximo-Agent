@@ -84,6 +84,25 @@ const (
 	EventPlanProposed  EventType = "plan.proposed"
 	EventPlanConfirmed EventType = "plan.confirmed"
 	EventPlanRejected  EventType = "plan.rejected"
+
+	// ---- run closure (durable) ----
+	//
+	// EventRunClosure carries the deterministic closure report of a run: which
+	// checks passed and whether the run may honestly be called finished. It is
+	// emitted exactly once per terminal path and always *before* the terminal
+	// transition, because the event stream closes at the terminal state and a
+	// later event would never reach a subscriber.
+	//
+	// The run state machine is deliberately untouched: "did it finish cleanly"
+	// is expressed by this event, not by a new state.
+	EventRunClosure EventType = "run.closure"
+
+	// ---- memory recall (durable) ----
+	//
+	// EventMemoryRecalled reports which long-term memories were activated for a
+	// run, with the path that activated each one, so the Work Log can show
+	// "recalled N memories" and explain why.
+	EventMemoryRecalled EventType = "memory.recalled"
 )
 
 // durableEvents is the closed set of event types written to the event log.
@@ -105,6 +124,14 @@ var durableEvents = map[EventType]bool{
 	// the proposal carries the text the UI renders, and the decision is what
 	// makes the run's continuation auditable, so neither may be coalesced away.
 	EventPlanProposed: true, EventPlanConfirmed: true, EventPlanRejected: true,
+	// The closure report is the run's honest verdict. It must survive replay:
+	// after a crash the UI has to show the same "partial" badge, and a
+	// coalesced-away verdict would silently turn a half-done run into a
+	// seemingly clean one.
+	EventRunClosure: true,
+	// Recall results drive the "which memories were lit up" view; they are a
+	// logical boundary of the run, not chatter.
+	EventMemoryRecalled: true,
 }
 
 // Durable reports whether this event type must be persisted. The event log

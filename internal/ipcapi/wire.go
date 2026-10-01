@@ -125,6 +125,36 @@ type RunIDPayload struct {
 	RunID string `json:"run_id"`
 }
 
+// DecidePayload 是 TypeRunDecide 的载荷：用户对一个停在 waiting_user 的
+// 工具授权请求的答复（F5）。
+//
+// 与 ConfirmPlan 的区别是它回答的是「某一次工具调用能不能执行」，不是
+// 「这份计划行不行」。两者用不同的帧，是为了让引擎能分别校验：把计划确认
+// 当成工具授权，等于让用户无意中放行了一个他从未看过的工具调用。
+//
+// 字段只能追加。前端 frontend/src/shared/types.ts 的 DecidePayload 与本结构
+// 体是同一契约的两侧，必须同一个提交里一起改。
+type DecidePayload struct {
+	RunID string `json:"run_id"`
+	// CallID 定位待授权的工具调用；空值由引擎拒绝（否则无法判断批准的是哪一次）。
+	CallID string `json:"call_id"`
+	// Approve 为 true 表示批准执行，false 表示拒绝。拒绝不是失败：循环把
+	// 「用户拒绝执行」作为工具结果喂回模型，让它换一条路。
+	Approve bool `json:"approve"`
+	// Remember 为 "session" 时，本次批准在同一会话内对同类调用生效。
+	// 空值/"once" 表示只批准这一次。当前实现按一次处理并在回报中说明。
+	Remember string `json:"remember,omitempty"`
+}
+
+// DecideResultPayload 是 TypeRunDecide 的响应体。
+type DecideResultPayload struct {
+	RunID   string `json:"run_id"`
+	CallID  string `json:"call_id"`
+	Approve bool   `json:"approve"`
+	// Ok 为 true 表示决定已被接受并将推动 run 继续。
+	Ok bool `json:"ok"`
+}
+
 // RecoveryPayload 是恢复完成后的回报载荷。
 type RecoveryPayload struct {
 	// Plans 是本次恢复扫描得出的计划（含 skip）。

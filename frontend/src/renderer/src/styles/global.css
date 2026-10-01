@@ -310,3 +310,111 @@ select:focus {
 .animate-pulse-soft {
   animation: pulse-subtle 1.8s ease-in-out infinite;
 }
+
+/* ==========================================================================
+   Work Log（审核文档 2.4：动效规格）
+   ==========================================================================
+   折叠/展开刻意不用 height 动画：内容高度未知，height 动画会先跳到目标高度再
+   动画，看起来就是"闪一下"。CSS grid 的 0fr → 1fr 由浏览器按内容实际高度插值，
+   不需要测量。 */
+
+.wl-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.wl-collapse[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+
+.wl-collapse > .wl-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@keyframes wl-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wl-step {
+  animation: wl-step-in 0.24s ease-out both;
+}
+
+/* 进行中的圆点脉冲：用 box-shadow 扩散而不是 scale，避免影响行高与布局。 */
+@keyframes wl-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(var(--c-accent) / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(var(--c-accent) / 0);
+  }
+}
+
+.wl-dot[data-status='running'] {
+  border-radius: 9999px;
+  animation: wl-pulse 1.4s ease-in-out infinite;
+}
+
+/* 连线：只有"进行中"的那一段流动，已完成的是静态细线。 */
+@keyframes wl-flow {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 24px;
+  }
+}
+
+.wl-line {
+  opacity: 0;
+}
+
+.wl-line[data-active='true'] {
+  opacity: 1;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgb(var(--c-accent) / 0.7) 0 6px,
+    transparent 6px 12px
+  );
+  background-size: 2px 24px;
+  animation: wl-flow 0.8s linear infinite;
+}
+
+/* ticker：折叠态当前步骤文字切换时上滑淡入。 */
+@keyframes wl-tick {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wl-ticker > span {
+  animation: wl-tick 0.22s ease-out both;
+}
+
+/* 无障碍：开启系统"减少动态效果"后一切动画与过渡都关掉。
+   用 !important 是刻意的——这里是用户代理设置的最终解释，不应被任何组件的
+   局部样式覆盖。 */
+@media (prefers-reduced-motion: reduce) {
+  .wl-collapse,
+  .wl-step,
+  .wl-dot,
+  .wl-line,
+  .wl-ticker > span {
+    animation: none !important;
+    transition: none !important;
+  }
+}

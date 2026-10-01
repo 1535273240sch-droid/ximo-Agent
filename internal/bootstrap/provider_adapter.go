@@ -97,6 +97,10 @@ func (a *providerAdapter) Complete(ctx context.Context, req ports.ProviderReques
 			return ports.ProviderResponse{}, err
 		}
 		out := fromProviderResponse(resp)
+		// 回传「真正发给服务商的模型名」：req.Model 为空时上面已回退到适配器默认
+		// 模型，所以这里必须用回退后的 model，而不是 req.Model。UI 侧靠这个字段
+		// 证明「本次请求确实用了选中的模型」，而不是从请求参数反推。
+		out.Model = model
 		if req.OnUsage != nil {
 			req.OnUsage(out.Usage)
 		}
@@ -186,6 +190,9 @@ func (a *providerAdapter) completeStreaming(ctx context.Context, conv provider.C
 		ReasoningContent: reasoning.String(),
 		ToolCalls:        []types.ToolCall{},
 		Emitted:          emitted,
+		// conv.Model 是 toProviderRequest 填好的最终模型名（同样含默认回退），
+		// 与流式请求头里实际发出的 model 一致。
+		Model: conv.Model,
 	}
 	for _, tc := range outCalls {
 		var args map[string]any

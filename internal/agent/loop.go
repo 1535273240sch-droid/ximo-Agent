@@ -207,6 +207,21 @@ type LoopInput struct {
 	// PlanRevision counts plans already proposed for this run, so the UI and the
 	// event payload can tell a retry from a first draft.
 	PlanRevision int
+
+	// ToolDecisions carries the user's answers to tool-permission prompts (F5),
+	// keyed by tool call ID.
+	//
+	// It is consumed by observe: a call that needs confirmation and has a
+	// decision here proceeds (approve) or is recorded as refused (deny) instead
+	// of parking the run again. A call with no entry parks the run exactly as
+	// before, so a run that never hit a permission prompt is unaffected.
+	//
+	// The engine copies the map in and clears it afterwards: an approval is
+	// spent once, which is what keeps "the user said yes five rounds ago" from
+	// silently authorising a different call now. Run() folds the map into the
+	// conversation (which is per-run state) and clears it here, so nothing
+	// downstream can accidentally re-apply a decision.
+	ToolDecisions map[string]bool
 }
 
 // LoopResult is the terminal outcome of a run.
@@ -223,6 +238,19 @@ type LoopResult struct {
 	// so the next invocation (the user's answer) knows what it is answering.
 	Plan         string
 	PlanRevision int
+	// Closure is the run's deterministic closure report (F2/F4). It is the same
+	// value the run.closure event carried, so the engine can persist it on the
+	// run record without re-deriving it.
+	Closure types.RunClosureReport
+	// PendingToolCallIDs lists the tool calls this run parked on, in request
+	// order. Only the park path sets it. The engine stores the set so a
+	// user decision (or a recovery pass) can be matched against it: without
+	// this, a decision RPC could not tell "approve this specific call" from
+	// "approve whatever is pending".
+	PendingToolCallIDs []string
+	// PendingToolCallNames maps the same call IDs to their tool names, for the
+	// authorisation card and for the session-level "remember" rule.
+	PendingToolCallNames map[string]string
 }
 
 // Loop is the agent loop. It is stateless between runs: per-run state lives in
@@ -242,6 +270,13 @@ type Loop struct {
 	// matches the per-session cap so a pathological model response cannot
 	// create unbounded goroutines that merely wait in the scheduler.
 	maxParallelTools int
+	// lastParkedCalls records the calls that parked the current invocation, so
+	// runRound can report them to the engine as the pending approval set.
+	//
+	// It is per-Loop rather than per-Conversation because it describes "this
+	// invocation parked", not run state: the engine clears and re-reads it on
+	// every park, and the loop is single-goroutine per run.
+	lastParkedCalls []ToolOutcome
 }
 
 // LoopConfig assembles a Loop. Only Config, Provider, Dispatcher and Sink are
@@ -341,6 +376,11 @@ func (l *Loop) Run(ctx context.Context, in LoopInput) LoopResult {
 		}
 	}
 
+	// F5: fold the user's permission answers into this run's conversation and
+	// consume them from the input, so a retry cannot re-apply an old approval.
+	conv.FoldToolDecisions(in.ToolDecisions)
+	in.ToolDecisions = nil
+
 	// Phase 0: planning. It narrows the tool catalogue before the first round,
 	// which is what keeps the model from being handed a 40-tool catalogue for a
 	// one-file task.
@@ -379,6 +419,11 @@ func (l *Loop) Run(ctx context.Context, in LoopInput) LoopResult {
 				return l.finishCancelled(ctx, in, conv, res)
 			}
 
+			// F5 is resolved inside observe(): a call the user approved is
+			// allowed to proceed, a refused one becomes a denial observation.
+			// No replay of the original call is needed or attempted — see the
+			// note on ToolNameDecisionKey.
+
 			outcome, err := l.runRound(ctx, in, conv, round)
 			res.Rounds = conv.Rounds
 			res.Usage = conv.Usage
@@ -386,10 +431,22 @@ func (l *Loop) Run(ctx context.Context, in LoopInput) LoopResult {
 				return l.finishFailed(ctx, in, conv, res, err)
 			}
 			if outcome != nil {
+				if outcome.WrapUp {
+					// F1: the round ended with "stop" but the run is not
+					// allowed to finish on it. Every-todo-done means the model
+					// was told (by the pending AllTodosDonePrompt) to summarise,
+					// and it has not answered that yet; budget exhaustion means
+					// it never will without being asked. Either way the run owes
+					// the user one final tool-less round.
+					return l.forceWrapUp(ctx, in, conv, res, outcome.Reason)
+				}
 				res.State = outcome.State
 				res.Answer = outcome.Answer
 				res.Err = outcome.Err
 				res.ToolCalls = conv.toolCallCount
+				res.Closure = conv.lastClosure
+				res.PendingToolCallIDs = outcome.PendingToolCallIDs
+				res.PendingToolCallNames = outcome.PendingToolCallNames
 				return res
 			}
 		}
@@ -424,7 +481,10 @@ func (l *Loop) Run(ctx context.Context, in LoopInput) LoopResult {
 	// The round budget is exhausted: force a text-only final answer. Tools are
 	// withheld for this round, which is what makes the model produce a summary
 	// instead of asking for another tool it will never get to run.
-	return l.forceWrapUp(ctx, in, conv, res)
+	//
+	// F2: the reason travels with the call so the closure report can label the
+	// result partial instead of letting a budget-exhausted run look finished.
+	return l.forceWrapUp(ctx, in, conv, res, types.ClosureReasonBudgetExhausted)
 }
 
 // resultFromOutcome converts a failed round outcome into a terminal LoopResult,
@@ -449,6 +509,24 @@ type roundOutcome struct {
 	State  types.RunState
 	Answer string
 	Err    error
+	// WrapUp asks Run to spend one final, tool-less summarising round before
+	// the run terminates (F1).
+	//
+	// Why a flag rather than the round doing the summary itself: the summary is
+	// a *round* (it needs the run's round bookkeeping, the streaming deltas and
+	// the terminal transition), and runRound is where rounds are executed. The
+	// flag keeps that ownership in one place instead of duplicating the
+	// provider call inside observe.
+	WrapUp bool
+	// Reason names why the wrap-up is happening, so the closure report can tell
+	// "the todo list finished" from "the round budget ran out". See the
+	// types.ClosureReason* constants.
+	Reason string
+	// PendingToolCallIDs / PendingToolCallNames describe the calls this round
+	// parked on (F5), so Run can hand them back to the engine. They are empty on
+	// every other outcome.
+	PendingToolCallIDs   []string
+	PendingToolCallNames map[string]string
 }
 
 // runRound executes one Think→Tool Calls→Observe cycle.
@@ -520,27 +598,37 @@ func (l *Loop) runRound(ctx context.Context, in LoopInput, conv *Conversation, r
 		}
 		return &roundOutcome{State: types.StateFailed, Err: e}, nil
 
-	case ports.FinishStop, ports.FinishLength:
+	case ports.FinishStop:
 		// The model produced a final answer.
-		conv.LastAnswer = resp.Content
-		// The answer is emitted *before* the terminal transition. Ordering
-		// matters: a subscriber's stream ends at the terminal state event, so
-		// marking the run complete first would let an observer see "completed"
-		// with no answer recorded.
-		if eerr := l.emit(ctx, LoopEvent{
-			Type: types.EventFinalAnswer, Round: round,
-			Message: resp.Content,
-			Data: map[string]any{
-				"finishReason": string(resp.FinishReason),
-				"length":       len(resp.Content),
-			},
-		}); eerr != nil {
-			return l.failedOutcome(eerr)
+		//
+		// F4: an empty answer is not an answer. It used to be reported as
+		// "completed" with an empty body, which is the one outcome a user can
+		// never act on. Give the model exactly one chance to produce text; if it
+		// refuses again the run fails with a reason instead of pretending.
+		if strings.TrimSpace(resp.Content) == "" {
+			return l.handleEmptyAnswer(ctx, in, conv, round, resp)
 		}
-		if terr := l.transition(ctx, in, types.StateCompleted, "final answer"); terr != nil {
-			return l.failedOutcome(terr)
+		return l.finishWithAnswer(ctx, in, conv, round, resp, types.ClosureReasonCompleted, false)
+
+	case ports.FinishLength:
+		// F3: an answer cut off by the output-length limit is not a finished
+		// answer. Ask the model to continue from where it stopped, up to the
+		// configured cap; only when that budget is spent is the truncated text
+		// accepted — and then honestly marked partial.
+		maxContinues := l.cfg.MaxLengthContinues
+		if maxContinues <= 0 {
+			maxContinues = types.DefaultMaxLengthContinues
 		}
-		return &roundOutcome{State: types.StateCompleted, Answer: resp.Content}, nil
+		if conv.Closure.LengthContinues < maxContinues {
+			conv.Closure.LengthContinues++
+			conv.AppendAssistant(resp.Content, resp.ReasoningContent, nil,
+				effortOr(in.Request.Effort).ThinkingEnabled())
+			conv.Append(ports.Message{Role: ports.RoleUser, Content: LengthContinuationPrompt})
+			// A nil outcome with a nil error means "run the next round".
+			return nil, nil
+		}
+		conv.Closure.Truncated = true
+		return l.finishWithAnswer(ctx, in, conv, round, resp, types.ClosureReasonTruncated, true)
 
 	case ports.FinishToolCalls:
 		// Fall through to observation below.
@@ -556,18 +644,10 @@ func (l *Loop) runRound(ctx context.Context, in LoopInput, conv *Conversation, r
 	if len(resp.ToolCalls) == 0 {
 		// The finish reason claims tool calls but none arrived. Treat it as a
 		// final answer rather than looping forever on empty rounds.
-		conv.LastAnswer = resp.Content
-		if eerr := l.emit(ctx, LoopEvent{
-			Type: types.EventFinalAnswer, Round: round,
-			Message: resp.Content,
-			Data:    map[string]any{"finishReason": string(resp.FinishReason), "emptyToolCalls": true},
-		}); eerr != nil {
-			return l.failedOutcome(eerr)
+		if strings.TrimSpace(resp.Content) == "" {
+			return l.handleEmptyAnswer(ctx, in, conv, round, resp)
 		}
-		if terr := l.transition(ctx, in, types.StateCompleted, "tool_calls with no calls"); terr != nil {
-			return l.failedOutcome(terr)
-		}
-		return &roundOutcome{State: types.StateCompleted, Answer: resp.Content}, nil
+		return l.finishWithAnswer(ctx, in, conv, round, resp, types.ClosureReasonCompleted, false)
 	}
 
 	// Observe: execute the round's tool calls.
@@ -578,29 +658,149 @@ func (l *Loop) runRound(ctx context.Context, in LoopInput, conv *Conversation, r
 		}
 		if types.CodeOf(err) == types.CodeAwaitingUser {
 			// The run is parked, not dead. The conversation keeps its place so
-			// a resume continues from the same round.
-			return &roundOutcome{State: types.StateWaitingUser, Err: err}, nil
+			// a resume continues from the same round. The pending calls are
+			// reported so the engine can match a later decision against them.
+			out := &roundOutcome{State: types.StateWaitingUser, Err: err}
+			for _, oc := range l.lastParkedCalls {
+				out.PendingToolCallIDs = append(out.PendingToolCallIDs, oc.Call.ID)
+				if out.PendingToolCallNames == nil {
+					out.PendingToolCallNames = make(map[string]string, len(l.lastParkedCalls))
+				}
+				out.PendingToolCallNames[oc.Call.ID] = oc.Call.Name
+			}
+			return out, nil
 		}
 		return l.failedOutcome(err)
 	}
 	if stop {
-		// Every todo is done: wrap up now rather than spending another round.
-		// The answer recorded here is the model's own last text, so it is
-		// emitted before the terminal transition for the same ordering reason
-		// as the other completion paths.
-		if eerr := l.emit(ctx, LoopEvent{
-			Type: types.EventFinalAnswer, Round: round,
-			Message: conv.LastAnswer,
-			Data:    map[string]any{"allTodosDone": true},
-		}); eerr != nil {
-			return l.failedOutcome(eerr)
-		}
-		if terr := l.transition(ctx, in, types.StateCompleted, "all todos complete"); terr != nil {
-			return l.failedOutcome(terr)
-		}
-		return &roundOutcome{State: types.StateCompleted, Answer: conv.LastAnswer}, nil
+		// F1: every todo is done. Do NOT finish here on the model's older text:
+		// the AllTodosDonePrompt observe() appended has not been read by anyone
+		// yet, so finishing now would show a stale (often empty) answer as the
+		// final one. Ask for a real summary round instead.
+		return &roundOutcome{WrapUp: true, Reason: types.ClosureReasonTodosDone}, nil
 	}
 	return nil, nil
+}
+
+// finishWithAnswer emits the final answer, the closure report and the terminal
+// transition, in the only order the event stream tolerates: answer, then
+// closure, then the terminal state.
+//
+// Centralising it is not cosmetic. The ordering constraint ("events precede the
+// terminal transition because the stream closes there") applied to two separate
+// hand-written paths before, and the closure report added a third thing that had
+// to be exactly once and exactly here.
+func (l *Loop) finishWithAnswer(ctx context.Context, in LoopInput, conv *Conversation, round int, resp ports.ProviderResponse, reason string, truncated bool) (*roundOutcome, error) {
+	conv.LastAnswer = resp.Content
+	// The closure report is computed first so the final_answer payload can
+	// carry its verdict in the same event: a second final_answer frame would be
+	// redundant traffic, and deriving the verdict twice would risk the two
+	// disagreeing.
+	rep := types.BuildRunClosureReport(&conv.Closure, types.ClosureInput{
+		Reason: reason, Answer: resp.Content,
+	})
+	conv.lastClosure = rep
+
+	data := map[string]any{
+		"finishReason": string(resp.FinishReason),
+		"length":       len(resp.Content),
+		"reason":       reason,
+	}
+	if truncated || rep.Incomplete {
+		data["incomplete"] = true
+	}
+	if rep.Verdict != "" {
+		data["verdict"] = rep.Verdict
+	}
+	// The model that actually served this round, when the provider reported it.
+	// It is the evidence chain for "the model I picked was really used": the
+	// request field is empty whenever the user chose to follow the global
+	// default, so only an echo can prove it.
+	if resp.Model != "" {
+		data["model"] = resp.Model
+	}
+	if eerr := l.emit(ctx, LoopEvent{
+		Type: types.EventFinalAnswer, Round: round,
+		Message: resp.Content, Data: data,
+	}); eerr != nil {
+		return l.failedOutcome(eerr)
+	}
+	if _, cerr := l.emitClosureReport(ctx, conv, rep, reason); cerr != nil {
+		return l.failedOutcome(cerr)
+	}
+	if terr := l.transition(ctx, in, types.StateCompleted, "final answer"); terr != nil {
+		return l.failedOutcome(terr)
+	}
+	return &roundOutcome{State: types.StateCompleted, Answer: resp.Content}, nil
+}
+
+// handleEmptyAnswer implements F4: one retry, then an honest failure.
+func (l *Loop) handleEmptyAnswer(ctx context.Context, in LoopInput, conv *Conversation, round int, resp ports.ProviderResponse) (*roundOutcome, error) {
+	maxRetries := l.cfg.EmptyAnswerRetries
+	if maxRetries == 0 {
+		maxRetries = types.DefaultEmptyAnswerRetries
+	}
+	if conv.EmptyAnswerRetries < maxRetries {
+		conv.EmptyAnswerRetries++
+		conv.AppendAssistant(resp.Content, resp.ReasoningContent, resp.ToolCalls,
+			effortOr(in.Request.Effort).ThinkingEnabled())
+		conv.Append(ports.Message{Role: ports.RoleUser, Content: EmptyAnswerPrompt})
+		return nil, nil
+	}
+	// Out of retries: fail loudly. The error event must precede the terminal
+	// transition (the stream closes there), and the closure report is emitted
+	// between them so the UI can show *why* the answer is missing.
+	e := types.NewError(types.CodeProviderFailed,
+		"模型连续两次返回空答复，本次 run 没有可用的最终答案")
+	if eerr := l.emitError(ctx, round, "", "", e); eerr != nil {
+		return l.failedOutcome(eerr)
+	}
+	rep, cerr := l.emitClosure(ctx, conv, types.ClosureInput{
+		Reason: types.ClosureReasonEmpty, Answer: "",
+	})
+	if cerr != nil {
+		return l.failedOutcome(cerr)
+	}
+	conv.lastClosure = rep
+	if terr := l.transition(ctx, in, types.StateFailed, "empty final answer"); terr != nil {
+		return l.failedOutcome(terr)
+	}
+	return &roundOutcome{State: types.StateFailed, Err: e}, nil
+}
+
+// emitClosure builds and emits the run.closure event.
+//
+// Exactly-once is guaranteed structurally rather than by convention: this is the
+// only function that emits the event, and every terminal path calls it after its
+// answer event and before its terminal transition.
+func (l *Loop) emitClosure(ctx context.Context, conv *Conversation, in types.ClosureInput) (types.RunClosureReport, error) {
+	rep := types.BuildRunClosureReport(&conv.Closure, in)
+	return l.emitClosureReport(ctx, conv, rep, in.Reason)
+}
+
+// emitClosureReport emits an already-built report. It is separate from
+// emitClosure because the completion paths build the report before the answer
+// event (so the answer can carry the verdict) and emit it after.
+func (l *Loop) emitClosureReport(ctx context.Context, conv *Conversation, rep types.RunClosureReport, reason string) (types.RunClosureReport, error) {
+	checks := make([]map[string]any, 0, len(rep.Checks))
+	for _, c := range rep.Checks {
+		checks = append(checks, map[string]any{
+			"id": c.ID, "label": c.Label, "pass": c.Pass, "note": c.Note,
+		})
+	}
+	if err := l.emit(ctx, LoopEvent{
+		Type: types.EventRunClosure, Round: conv.Rounds,
+		Message: rep.Verdict,
+		Data: map[string]any{
+			"verdict":    rep.Verdict,
+			"checks":     checks,
+			"incomplete": rep.Incomplete,
+			"reason":     reason,
+		},
+	}); err != nil {
+		return rep, err
+	}
+	return rep, nil
 }
 
 // think performs one provider round, streaming deltas into the sink.
@@ -646,6 +846,7 @@ func (l *Loop) think(ctx context.Context, in LoopInput, conv *Conversation, roun
 			"finishReason": string(resp.FinishReason),
 			"toolCalls":    len(resp.ToolCalls),
 			"usage":        resp.Usage,
+			"model":        firstNonEmpty(resp.Model, in.Request.Model),
 		},
 	}); err != nil {
 		return resp, err
@@ -679,20 +880,40 @@ func (l *Loop) observe(ctx context.Context, in LoopInput, conv *Conversation, ro
 
 	outcomes := l.dispatchAll(ctx, round, calls)
 
-	// Detect a parked run before touching the conversation: a call awaiting
-	// confirmation must not be written to the model as an observation.
-	for _, oc := range outcomes {
-		if oc.NeedsConfirmation {
-			if err := l.transitionTo(ctx, in, types.StateWaitingUser, Transition{
-				Reason:        "tool call requires user confirmation",
-				WaitingReason: oc.ConfirmationMessage,
+	// F5: a call that needs confirmation is resolved from the user's decision
+	// when one exists, instead of parking the run again. Without this the run
+	// would park forever: the user's approval had nowhere to go.
+	outcomes, parked, parkedCalls := l.applyToolDecisions(conv, outcomes)
+	if len(parked) > 0 {
+		l.lastParkedCalls = parkedCalls
+		if err := l.transitionTo(ctx, in, types.StateWaitingUser, Transition{
+			Reason:        "tool call requires user confirmation",
+			WaitingReason: parked[0].ConfirmationMessage,
+		}); err != nil {
+			return false, err
+		}
+		// R5: the event carries everything the approval card needs to show
+		// *what* the user is being asked to allow. It is emitted before the
+		// park is reported so the UI has the request by the time it renders the
+		// waiting state; the call ID is what the decision RPC will quote back.
+		for _, oc := range parked {
+			if err := l.emit(ctx, LoopEvent{
+				Type: types.EventToolPermissionRequired, Round: round,
+				ToolCallID: oc.Call.ID, ToolName: oc.Call.Name,
+				Message: oc.ConfirmationMessage,
+				Data: map[string]any{
+					"arguments": redactArgs(oc.Call.Arguments),
+					"callId":    oc.Call.ID,
+					"toolName":  oc.Call.Name,
+				},
 			}); err != nil {
 				return false, err
 			}
-			return false, types.NewError(types.CodeAwaitingUser,
-				"tool %s requires user confirmation", oc.Call.Name)
 		}
+		return false, types.NewError(types.CodeAwaitingUser,
+			"tool %s requires user confirmation", parked[0].Call.Name)
 	}
+	l.lastParkedCalls = nil
 
 	allTodosDone := false
 	for _, oc := range outcomes {
@@ -716,8 +937,85 @@ func (l *Loop) observe(ctx context.Context, in LoopInput, conv *Conversation, ro
 	return false, nil
 }
 
-// dispatchAll runs every call in the round with bounded parallelism and
-// returns the outcomes in the original call order.
+// applyToolDecisions resolves the calls that need confirmation against the
+// user's decisions, and reports the ones that still have none.
+//
+// Three outcomes per call:
+//
+//   - NeedsConfirmation with a decision in ToolDecisions: the call is allowed
+//     to proceed (approve) or is turned into a refusal indistinguishable from
+//     the permission layer's own denial (deny), so the model sees one uniform
+//     "the user declined" observation either way.
+//   - NeedsConfirmation with no decision: the call stays parked.
+//   - Anything else: untouched.
+//
+// The returned slices are ordered like the input, so the conversation and the
+// event stream stay deterministic even though the decisions arrive from another
+// goroutine.
+func (l *Loop) applyToolDecisions(conv *Conversation, outcomes []ToolOutcome) (resolved []ToolOutcome, parked []ToolOutcome, parkedCalls []ToolOutcome) {
+	if len(outcomes) == 0 {
+		return outcomes, nil, nil
+	}
+	decide := func(call types.ToolCall) (approve, ok bool) {
+		if v, found := conv.toolDecision(call.ID); found {
+			return v, true
+		}
+		// A session-level approval ("remember" in the design note) is keyed by
+		// tool name, because the re-issued call carries a new ID.
+		if v, found := conv.toolDecision(ToolNameDecisionKey(call.Name)); found {
+			return v, true
+		}
+		return false, false
+	}
+	resolved = make([]ToolOutcome, 0, len(outcomes))
+	for _, oc := range outcomes {
+		if !oc.NeedsConfirmation {
+			resolved = append(resolved, oc)
+			continue
+		}
+		approve, ok := decide(oc.Call)
+		if !ok {
+			parked = append(parked, oc)
+			parkedCalls = append(parkedCalls, oc)
+			continue
+		}
+		if !approve {
+			// A refusal is recorded exactly like a permission denial so the
+			// model gets the same observation it already knows how to react to.
+			oc.Denied = true
+			oc.NeedsConfirmation = false
+			oc.ConfirmationMessage = ""
+			resolved = append(resolved, oc)
+			continue
+		}
+		oc.NeedsConfirmation = false
+		oc.ConfirmationMessage = ""
+		resolved = append(resolved, oc)
+	}
+	return resolved, parked, parkedCalls
+}
+
+// ToolNameDecisionKey is the key an engine uses in ToolDecisions to approve a
+// whole tool by name rather than one specific call.
+//
+// It exists because an approval has to survive the model re-issuing the call:
+// a tool_call ID belongs to the assistant turn that produced it, and a resumed
+// run cannot reuse it. Approving "the file_write the user just allowed" by name
+// is what actually unblocks the run, and the prefix keeps the two kinds of key
+// from ever colliding with a real call ID.
+func ToolNameDecisionKey(toolName string) string { return "name:" + toolName }
+
+// takeApprovedCalls is intentionally absent.
+//
+// An approval resumes a run by REMEMBERING it (per call ID, and per tool name
+// for a session-level "remember"), then letting the next model round re-issue
+// the call. Replaying the original call directly is not possible on this wire
+// format: a tool_call ID belongs to the assistant turn that produced it and the
+// protocol only accepts a result that replies to the immediately preceding
+// assistant message, so after a park and a resume the old pairing is dead. See
+// ToolNameDecisionKey and applyToolDecisions.
+
+
 func (l *Loop) dispatchAll(ctx context.Context, round int, calls []types.ToolCall) []ToolOutcome {
 	outcomes := make([]ToolOutcome, len(calls))
 	sem := make(chan struct{}, l.maxParallelTools)
@@ -803,15 +1101,25 @@ func (l *Loop) dispatchContained(ctx context.Context, call types.ToolCall) (oc T
 // this outcome completed the whole todo list.
 func (l *Loop) observeOne(ctx context.Context, in LoopInput, conv *Conversation, round int, oc ToolOutcome) (allTodosDone bool) {
 	call := oc.Call
+	// F6: every outcome is recorded in the closure tracker under the tool's
+	// target key, so "a later success resolved an earlier failure" is
+	// expressible without a second pass over the event log.
+	key := types.ToolCallKey(call.Name, call.Arguments)
 
 	switch {
 	case oc.Panicked != nil:
-		msg := "Error: tool panicked: " + types.RedactString(toString(oc.Panicked))
+		detail := types.RedactString(toString(oc.Panicked))
+		msg := "Error: tool panicked: " + detail
 		_ = l.emit(ctx, LoopEvent{
 			Type: types.EventToolFailed, Round: round,
 			ToolCallID: call.ID, ToolName: call.Name,
-			Message: msg, Data: map[string]any{"panicked": true},
+			Message: msg, Data: map[string]any{
+				"panicked":   true,
+				"error":      detail,
+				"durationMs": oc.Duration.Milliseconds(),
+			},
 		})
+		conv.Closure.RecordToolCall(key, false, detail)
 		conv.AppendToolResult(call.ID, msg)
 		return false
 
@@ -820,21 +1128,29 @@ func (l *Loop) observeOne(ctx context.Context, in LoopInput, conv *Conversation,
 		// retry, choose another tool, or explain the failure, which beats
 		// aborting the run. Cancellation is the exception, handled by the
 		// caller before reaching here.
-		msg := "Error: " + redactErr(oc.Err)
+		detail := redactErr(oc.Err)
+		msg := "Error: " + detail
 		_ = l.emit(ctx, LoopEvent{
 			Type: types.EventToolFailed, Round: round,
 			ToolCallID: call.ID, ToolName: call.Name,
 			Message: msg, Err: oc.Err,
+			Data: map[string]any{
+				"error":      detail,
+				"durationMs": oc.Duration.Milliseconds(),
+			},
 		})
+		conv.Closure.RecordToolCall(key, false, detail)
 		conv.AppendToolResult(call.ID, msg)
 		return false
 
 	case oc.Denied:
-		msg := "Error: 用户取消执行"
+		msg := "Error: 用户拒绝执行"
 		_ = l.emit(ctx, LoopEvent{
 			Type: types.EventToolCancelled, Round: round,
 			ToolCallID: call.ID, ToolName: call.Name, Message: msg,
+			Data: map[string]any{"denied": true, "durationMs": oc.Duration.Milliseconds()},
 		})
+		conv.Closure.RecordToolCall(key, false, msg)
 		conv.AppendToolResult(call.ID, msg)
 		return false
 
@@ -842,17 +1158,32 @@ func (l *Loop) observeOne(ctx context.Context, in LoopInput, conv *Conversation,
 		if !oc.Result.Success {
 			// v1 normalises failures to "Error: …" so a rebuilt request is
 			// byte-identical to the streamed one, protecting the prompt cache.
-			content := "Error: " + firstNonEmpty(oc.Result.Error, oc.Result.Content, "工具执行失败")
+			detail := firstNonEmpty(oc.Result.Error, oc.Result.Content, "工具执行失败")
+			content := "Error: " + detail
+			// F6: the failure carried only a duration before, so the UI could
+			// not say *why* a tool failed. The error text and a bounded preview
+			// of the output travel with the event now; both are redacted and
+			// clamped so the event log and the IPC frame stay bounded.
 			_ = l.emit(ctx, LoopEvent{
 				Type: types.EventToolFailed, Round: round,
 				ToolCallID: call.ID, ToolName: call.Name,
-				Message: oc.Result.Error,
-				Data:    map[string]any{"durationMs": oc.Duration.Milliseconds()},
+				Message: types.RedactString(oc.Result.Error),
+				Data: map[string]any{
+					"durationMs": oc.Duration.Milliseconds(),
+					"error":      types.RedactString(detail),
+					"result":     previewForUI(oc.Result.Content),
+					"bytes":      len(oc.Result.Content),
+				},
 			})
+			conv.Closure.RecordToolCall(key, false, detail)
 			conv.AppendToolResult(call.ID,
 				sanitizeContent(truncatePlain(content, l.cfg.MaxToolResultChars)))
 			return false
 		}
+		// F6: the success payload carried only success/duration/bytes, so the
+		// frontend's "execution result" block could never fill in. The preview
+		// is redacted and clamped to 2 KiB: the full output belongs in the
+		// conversation, never in a durable event that is also an IPC frame.
 		_ = l.emit(ctx, LoopEvent{
 			Type: types.EventToolCompleted, Round: round,
 			ToolCallID: call.ID, ToolName: call.Name,
@@ -860,12 +1191,56 @@ func (l *Loop) observeOne(ctx context.Context, in LoopInput, conv *Conversation,
 				"success":    true,
 				"durationMs": oc.Duration.Milliseconds(),
 				"bytes":      len(oc.Result.Content),
+				"result":     previewForUI(oc.Result.Content),
 			},
 		})
+		conv.Closure.RecordToolCall(key, true, "")
+		if total, done, ok := todoSnapshot(oc); ok {
+			conv.Closure.RecordTodos(total, done)
+		}
 		conv.AppendToolResult(call.ID,
 			sanitizeContent(truncatePlain(oc.Result.Content, l.cfg.MaxToolResultChars)))
 		return detectsAllTodosDone(oc)
 	}
+}
+
+// maxEventPreviewBytes bounds the tool output that may travel in an event.
+//
+// The design note fixes it at 2 KiB. It is a hard bound rather than a
+// convenience: events are persisted and pushed over IPC, so an unbounded
+// preview would let one verbose tool fill the event log.
+const maxEventPreviewBytes = 2048
+
+// previewForUI renders a tool output for an event payload: redacted first, then
+// clamped on a rune boundary with an explicit "truncated" marker, because a
+// silently shortened preview reads as a complete one.
+func previewForUI(s string) string {
+	s = types.RedactString(s)
+	if len(s) <= maxEventPreviewBytes {
+		return s
+	}
+	runes := []rune(s)
+	// Cut on a rune boundary; the byte budget is the trigger, the rune count is
+	// the cut, so a multi-byte character is never split in half.
+	if len(runes) > maxEventPreviewBytes {
+		runes = runes[:maxEventPreviewBytes]
+	}
+	return string(runes) + "…（已截断，共 " + itoa(len(s)) + " 字节）"
+}
+
+// todoSnapshot reads the todo_write counts out of a tool result, if it has any.
+func todoSnapshot(oc ToolOutcome) (total, done int, ok bool) {
+	if oc.Result.ToolName != "todo_write" && oc.Call.Name != "todo_write" {
+		return 0, 0, false
+	}
+	if oc.Result.Metadata == nil {
+		return 0, 0, false
+	}
+	total = intFromAny(oc.Result.Metadata["total"])
+	if total <= 0 {
+		return 0, 0, false
+	}
+	return total, intFromAny(oc.Result.Metadata["done"]), true
 }
 
 // reviewRound runs the ultra-mode quality gate, when one is configured.
@@ -902,6 +1277,10 @@ func (l *Loop) reviewRound(ctx context.Context, in LoopInput, conv *Conversation
 	}
 	review.Round = round
 	conv.Reviews = append(conv.Reviews, review)
+	// F2: the closure report's review check reads the newest verdict, so it is
+	// recorded here — where the verdict becomes real — rather than re-derived
+	// from the conversation later.
+	conv.Closure.RecordReview(string(review.Verdict))
 
 	data := map[string]any{
 		"verdict":  string(review.Verdict),
@@ -1062,14 +1441,22 @@ func (l *Loop) maybeCompact(ctx context.Context, in LoopInput, conv *Conversatio
 }
 
 // forceWrapUp asks for a final answer with the tool catalogue withheld.
-func (l *Loop) forceWrapUp(ctx context.Context, in LoopInput, conv *Conversation, res LoopResult) LoopResult {
+//
+// reason distinguishes the two ways a run arrives here (F1/F2): "todos_done"
+// means the model already completed its todo list and only owes a summary, so
+// observe() has already appended the AllTodosDonePrompt and appending the
+// generic wrap-up prompt on top would ask the same thing twice; every other
+// reason means the budget ran out and the model has not been told to stop.
+func (l *Loop) forceWrapUp(ctx context.Context, in LoopInput, conv *Conversation, res LoopResult, reason string) LoopResult {
 	if err := l.checkCancelled(ctx); err != nil {
 		return l.finishCancelled(ctx, in, conv, res)
 	}
 	if err := l.transition(ctx, in, types.StateThinking, "forced wrap-up"); err != nil {
 		return l.finishFailed(ctx, in, conv, res, err)
 	}
-	conv.Append(ports.Message{Role: ports.RoleUser, Content: WrapUpPrompt})
+	if reason != types.ClosureReasonTodosDone {
+		conv.Append(ports.Message{Role: ports.RoleUser, Content: WrapUpPrompt})
+	}
 
 	// Tools are withheld for the wrap-up round. The catalogue is restored
 	// afterwards so a resume from this point is not silently tool-less.
@@ -1132,16 +1519,44 @@ func (l *Loop) forceWrapUp(ctx context.Context, in LoopInput, conv *Conversation
 	}
 	conv.LastAnswer = answer
 
+	// F3 can also bite the wrap-up round: a truncated final answer is still
+	// truncated, whatever round produced it.
+	if resp.FinishReason == ports.FinishLength && conv.Closure.LengthContinues >= l.lengthContinueCap() {
+		conv.Closure.Truncated = true
+	}
+
+	// F2: the wrap-up answer must be labelled honestly. When the reason is
+	// budget exhaustion the run is partial by construction, and the closure
+	// report says so instead of the state machine pretending otherwise.
+	rep := types.BuildRunClosureReport(&conv.Closure, types.ClosureInput{
+		Reason: reason, Answer: answer,
+	})
+	conv.lastClosure = rep
+
+	data := map[string]any{
+		"wrappedUp":    true,
+		"finishReason": string(resp.FinishReason),
+		"emptyContent": strings.TrimSpace(resp.Content) == "",
+		"reason":       reason,
+	}
+	if rep.Incomplete {
+		data["incomplete"] = true
+	}
+	if rep.Verdict != "" {
+		data["verdict"] = rep.Verdict
+	}
+	if resp.Model != "" {
+		data["model"] = resp.Model
+	}
+
 	// Emitted before the terminal transition, as on every other completion path.
 	if err := l.emit(ctx, LoopEvent{
 		Type: types.EventFinalAnswer, Round: conv.Rounds,
-		Message: answer,
-		Data: map[string]any{
-			"wrappedUp":    true,
-			"finishReason": string(resp.FinishReason),
-			"emptyContent": strings.TrimSpace(resp.Content) == "",
-		},
+		Message: answer, Data: data,
 	}); err != nil {
+		return l.finishFailed(ctx, in, conv, res, err)
+	}
+	if _, err := l.emitClosureReport(ctx, conv, rep, reason); err != nil {
 		return l.finishFailed(ctx, in, conv, res, err)
 	}
 	if err := l.transition(ctx, in, types.StateCompleted, "wrap-up answer"); err != nil {
@@ -1149,7 +1564,16 @@ func (l *Loop) forceWrapUp(ctx context.Context, in LoopInput, conv *Conversation
 	}
 	res.State = types.StateCompleted
 	res.Answer = answer
+	res.Closure = rep
 	return res
+}
+
+// lengthContinueCap returns the effective output-length continuation cap.
+func (l *Loop) lengthContinueCap() int {
+	if l.cfg.MaxLengthContinues > 0 {
+		return l.cfg.MaxLengthContinues
+	}
+	return types.DefaultMaxLengthContinues
 }
 
 // finishCancelled records a cancelled terminal state.
@@ -1161,8 +1585,19 @@ func (l *Loop) finishCancelled(ctx context.Context, in LoopInput, conv *Conversa
 	res.State = types.StateCancelled
 	// Use a detached context: the run's context is already cancelled, but the
 	// cancellation event must still reach the durable log.
-	_ = l.transition(context.WithoutCancel(ctx), in, types.StateCancelled, "cancelled")
-	_ = l.emit(context.WithoutCancel(ctx), LoopEvent{
+	dctx := context.WithoutCancel(ctx)
+	// The closure report is emitted for every terminal path, cancellation
+	// included: "cancelled" is an honest verdict the UI must be able to show,
+	// and a path that skipped the event would leave the badge empty.
+	rep, cerr := l.emitClosure(dctx, conv, types.ClosureInput{
+		Reason: types.ClosureReasonCancelled, Answer: conv.LastAnswer,
+	})
+	if cerr == nil {
+		res.Closure = rep
+		conv.lastClosure = rep
+	}
+	_ = l.transition(dctx, in, types.StateCancelled, "cancelled")
+	_ = l.emit(dctx, LoopEvent{
 		Type: types.EventCancellation, Round: conv.Rounds, Message: "run cancelled",
 	})
 	return res
@@ -1181,6 +1616,13 @@ func (l *Loop) finishFailed(ctx context.Context, in LoopInput, conv *Conversatio
 	// 错误事件先行：事件流在终态事件处关闭，真实原因必须先于 run.failed
 	// 发出，否则流式订阅方永远只看到含糊的失败而看不到原因。
 	_ = l.emitError(dctx, conv.Rounds, "", "", err)
+	rep, cerr := l.emitClosure(dctx, conv, types.ClosureInput{
+		Reason: types.ClosureReasonFailed, Answer: conv.LastAnswer,
+	})
+	if cerr == nil {
+		res.Closure = rep
+		conv.lastClosure = rep
+	}
 	_ = l.transition(dctx, in, types.StateFailed, types.RedactString(toString(err)))
 	return res
 }

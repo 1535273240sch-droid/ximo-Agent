@@ -38,7 +38,10 @@ const (
 	TypeRunStatus    = "engine.run.status"
 	TypeEventStream  = "engine.event.stream"
 	// 计划模式（任务4）：用户对已生成计划的确认/否决。
-	TypePlanConfirm   = "engine.plan.confirm"
+	TypePlanConfirm = "engine.plan.confirm"
+	// 工具授权（F5）：用户对「某次工具调用需要确认」的批准/拒绝。
+	// 只追加，不改动已有帧名。
+	TypeRunDecide     = "engine.run.decide"
 	TypeWorkerHealth  = "worker.health"
 	TypeWorkerStop    = "worker.stop"
 	TypeWorkerExecute = "worker.execute"

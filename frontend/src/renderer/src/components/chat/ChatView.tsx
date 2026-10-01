@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, ArrowDown, CircleAlert, Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Loader2 } from 'lucide-react'
 import { selectRunForSession, useStore } from '../../store/app-store'
 import { isTerminalState } from '@shared/types'
 import { MessageList } from './MessageList'
@@ -23,7 +23,10 @@ export function ChatView(): React.JSX.Element {
   const runs = useStore((s) => s.runs)
   const submit = useStore((s) => s.submit)
   const confirmPlan = useStore((s) => s.confirmPlan)
+  const decideTool = useStore((s) => s.decideTool)
+  const setWorkLogOpen = useStore((s) => s.setWorkLogOpen)
   const run = selectRunForSession(runs, activeSessionId)
+  const [continuing, setContinuing] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
@@ -56,15 +59,36 @@ export function ChatView(): React.JSX.Element {
     if (pinnedToBottomRef.current) {
       scrollToBottom('auto')
     }
-  }, [run?.messages.length, run?.messages[run?.messages.length - 1]?.content, run?.lastSeq])
+  }, [
+    run?.messages.length,
+    run?.messages[run?.messages.length - 1]?.content,
+    run?.steps.length,
+    run?.lastSeq
+  ])
 
   const hasMessages = run && run.messages.length > 0
   const pendingPlan = run?.pendingPlan
   // 任务4：有计划待确认时，等待提示改由计划卡片承担（它本身就说明了要做什么
   // 决定），这里不再显示"正在处理任务…"的转圈条——否则等待用户决定的同时
   // 界面还在说"正在处理"，自相矛盾。
-  const isRunning = run && !isTerminalState(run.state) && !pendingPlan
-  const isWaitingUser = run?.state === 'waiting_user' && !pendingPlan
+  const isRunning = run && !isTerminalState(run.state) && !pendingPlan && !run.pendingApproval
+
+  /**
+   * 闭环「继续」：把未通过的检查项原文交给后端作为新任务。
+   *
+   * 为什么用「检查项 label 列表」而不是让前端自己编一句："继续" 的语义必须由
+   * 决定 verdict 的那一侧定义。前端只搬运结论，不重新解释它。
+   */
+  const handleContinue = (): void => {
+    const closure = run?.closure
+    if (!closure) return
+    const failed = closure.checks.filter((c) => !c.pass).map((c) => c.label)
+    if (failed.length === 0) return
+    setContinuing(true)
+    void submit(`请继续完成上一次未完成的部分：${failed.join('、')}`).finally(() =>
+      setContinuing(false)
+    )
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-canvas">
@@ -78,7 +102,18 @@ export function ChatView(): React.JSX.Element {
           {!hasMessages ? (
             <EmptyState onSelectPrompt={(p) => void submit(p)} />
           ) : (
-            <MessageList run={run} />
+            run && (
+              <MessageList
+                run={run}
+                workLogOpen={run.workLogOpen}
+                onToggleWorkLog={(open) => setWorkLogOpen(run.runId, open)}
+                onDecideTool={(callId, approve) =>
+                  void decideTool(run.runId, callId, approve)
+                }
+                onContinue={handleContinue}
+                continuing={continuing}
+              />
+            )
           )}
 
           {/* 执行状态指示条 */}
@@ -115,19 +150,6 @@ export function ChatView(): React.JSX.Element {
               plan={pendingPlan}
               onDecide={(approved) => void confirmPlan(run.runId, approved)}
             />
-          )}
-
-          {/* 等待人工审批 */}
-          {isWaitingUser && (
-            <div className="flex items-start gap-2.5 rounded-[8px] border border-warning/30 bg-warning/10 p-3.5 text-[13px] text-warning">
-              <CircleAlert size={16} className="mt-0.5 shrink-0" />
-              <div className="flex flex-col gap-1">
-                <span className="font-semibold text-warning">安全策略阻断：等待操作授权</span>
-                <span className="text-[12.5px] text-ink-muted">
-                  当前工具调用包含潜在风险操作（高危删除/执行），需要明确批准后方可继续。
-                </span>
-              </div>
-            </div>
           )}
         </div>
       </div>

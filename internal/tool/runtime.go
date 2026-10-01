@@ -203,6 +203,25 @@ func (rt *ToolRuntime) Execute(ctx context.Context, req ToolRequest) ToolRespons
 		rt.audit(ctx, req, AuditPermissionDenied, &decision, def, start, nil)
 		return rt.finish(resp, ErrPermissionDenied, decision.Reason, start)
 	case EffectAsk:
+		if rt.Confirmer == nil {
+			// No interactive confirmer is wired into this build, so "ask" has to
+			// be handed to the caller instead of being answered here. Reporting
+			// it as a plain permission denial (the previous behaviour) made an
+			// ask indistinguishable from a deny: the agent loop never learned
+			// that a *human* could still say yes, so auto_mode=safe parked a run
+			// forever with no button to click.
+			//
+			// The two fields below are the hand-off: the engine reads them out of
+			// ToolResult.Metadata and turns the call into the loop's park-and-ask
+			// path. ErrNeedsConfirmation keeps the machine-readable class honest.
+			resp.RequiresConfirmation = true
+			resp.ConfirmationMessage = decision.Reason
+			if resp.ConfirmationMessage == "" {
+				resp.ConfirmationMessage = fmt.Sprintf("工具 %s 需要用户确认", def.Name)
+			}
+			rt.audit(ctx, req, AuditPermissionAsk, &decision, def, start, map[string]any{"deferred": true})
+			return rt.finish(resp, ErrNeedsConfirmation, resp.ConfirmationMessage, start)
+		}
 		approved, err := rt.requestConfirmation(ctx, req, decision, def)
 		if err != nil || !approved {
 			reason := decision.Reason

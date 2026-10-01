@@ -612,10 +612,20 @@ func TestLoopLongTaskContinuations(t *testing.T) {
 }
 
 // TestLoopStopsWhenAllTodosDone checks the v1 behaviour of ending the run and
-// stripping tools once todo_write reports everything complete.
+// stripping tools once todo_write reports everything complete — and the F1 fix
+// on top of it.
+//
+// The audit (C1) found that this path used to finish immediately on the model's
+// text from the tool round, which is stale or empty: LastAnswer is only written
+// on a finish_stop/length round, so the run reported "completed" with no
+// summary. The fix requires one extra, tool-less summary round, and that round
+// is exactly what this test now asserts on.
 func TestLoopStopsWhenAllTodosDone(t *testing.T) {
 	cfg := types.DefaultAgentConfig()
-	p := mem.NewProvider(mem.ToolCallRound(mem.NewCall("t1", "todo_write", nil)))
+	p := mem.NewProvider(
+		mem.ToolCallRound(mem.NewCall("t1", "todo_write", nil)),
+		mem.FinalRound("全部待办已完成，以下是总结。"),
+	)
 	runtime := mem.NewToolRuntime(func(_ context.Context, _ ports.ToolRequest) (types.ToolResult, error) {
 		return types.ToolResult{
 			Success: true, Content: "todos updated",
@@ -624,18 +634,31 @@ func TestLoopStopsWhenAllTodosDone(t *testing.T) {
 	})
 	h := newLoopHarness(t, cfg, p, runtime)
 
-	res, _, conv := h.run(t, types.SubmitRequest{Prompt: "do the todos"},
+	res, _, _ := h.run(t, types.SubmitRequest{Prompt: "do the todos"},
 		[]types.ToolDefinition{{Name: "todo_write"}})
 
 	if res.State != types.StateCompleted {
 		t.Fatalf("state = %s, want completed (err=%v)", res.State, res.Err)
 	}
-	if len(conv.Tools) != 0 {
-		t.Errorf("tools = %d, want 0: the catalogue must be withheld to force a summary", len(conv.Tools))
-	}
-	if h.provider.RoundCount() != 1 {
-		t.Errorf("provider rounds = %d, want 1: a completed todo list must not spend another round",
+	// The catalogue must be withheld for the summary round. It is restored
+	// afterwards so a resume from this point is not silently tool-less, which
+	// is why the conversation still carries the original definitions.
+	if h.provider.RoundCount() != 2 {
+		t.Fatalf("provider rounds = %d, want 2: completing the todo list must spend one "+
+			"tool-less summary round (F1), not finish on the stale tool-round text",
 			h.provider.RoundCount())
+	}
+	if calls := h.provider.Calls; len(calls) >= 2 {
+		if last := calls[len(calls)-1]; len(last.Tools) != 0 {
+			t.Errorf("the summary round was given %d tools, want 0", len(last.Tools))
+		}
+	}
+	if res.Answer != "全部待办已完成，以下是总结。" {
+		t.Errorf("answer = %q, want the summary round's text", res.Answer)
+	}
+	if res.Closure.Verdict != types.ClosureClosed {
+		t.Errorf("closure verdict = %q, want %q (checks=%+v)",
+			res.Closure.Verdict, types.ClosureClosed, res.Closure.Checks)
 	}
 }
 

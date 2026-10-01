@@ -406,6 +406,21 @@ export class BackendClient {
     return this.request(FrameType.PlanConfirm, { run_id: runId, approved })
   }
 
+  /**
+   * 批准或拒绝一次待授权的工具调用（F5）。
+   *
+   * 载荷字段与 Go 侧 ipcapi.DecidePayload 一一对应（run_id / call_id / approve /
+   * remember）。remember 留空表示只批准这一次。
+   */
+  decide(payload: {
+    run_id: string
+    call_id: string
+    approve: boolean
+    remember?: string
+  }): Promise<unknown> {
+    return this.request(FrameType.RunDecide, payload)
+  }
+
   /** 探活。 */
   ping(): Promise<void> {
     return this.request(FrameType.Ping, {}, 5000).then(() => undefined)

@@ -41,7 +41,7 @@ jobs:
       - name: Build backend
         shell: bash
         run: |
-          go build -trimpath -ldflags "-X main.version=${{ steps.ver.outputs.version }}" -o dist/ximo-agent.exe ./cmd/ximo-agent/
+          go build -trimpath -ldflags "-X main.Version=${{ steps.ver.outputs.version }}" -o dist/ximo-agent.exe ./cmd/ximo-agent/
 
       - name: Set up Node
         uses: actions/setup-node@v4

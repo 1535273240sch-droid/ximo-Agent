@@ -20,6 +20,9 @@ export const IPC = {
   /** 计划模式：确认/否决一个 run 已提出的执行计划（任务4）。 */
   PlanConfirm: 'ximo:plan:confirm',
 
+  /** 工具授权：批准/拒绝一次待确认的工具调用（F5）。 */
+  RunDecide: 'ximo:run:decide',
+
   EventPushed: 'ximo:event:pushed',
 
   /** 密钥管理（后端只写不读明文）。 */

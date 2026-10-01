@@ -295,6 +295,19 @@ const WrapUpPrompt = "你已经完成了所有工具调用。请基于已有信�
 // AllTodosDonePrompt is injected when todo_write reports every task complete.
 const AllTodosDonePrompt = "所有任务已标记为完成。请基于已有工作成果，直接给出最终总结回复，无需再调用任何工具。"
 
+// LengthContinuationPrompt is appended as a user message when the model's
+// response was cut off by the output-length limit (F3).
+//
+// It is only ever appended at the tail of the message list, never inserted: the
+// stable prefix (system prompt, memory block, original task) is what the
+// provider's prompt cache hashes, and rewriting it would invalidate the cache
+// for the whole conversation.
+const LengthContinuationPrompt = "上一条回复因长度限制被截断，请从中断处继续，不要重复已输出的内容。"
+
+// EmptyAnswerPrompt is appended as a user message when the model returned no
+// text at all on a round that was supposed to be the final answer (F4).
+const EmptyAnswerPrompt = "你的回复为空，请给出对任务的最终答复。"
+
 // itoa is a tiny local integer formatter, avoiding a strconv import in a file
 // that otherwise has none.
 func itoa(n int) string {

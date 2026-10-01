@@ -28,12 +28,18 @@
 │  Engine 进程（业务真相所在）                              │
 │  ├─ SQLite WAL（单写多读）+ 迁移                          │
 │  ├─ Agent 循环：规划 → 思考 → 工具执行 → 校验 → 压缩      │
+│  ├─ 闭环校验：确定性检查 + run.closure 事件（不额外花调用）│
 │  ├─ 工具运行时：file / git / knowledge / web + Worker 池  │
 │  ├─ Provider：DeepSeek / OpenAI / 任意兼容接口            │
 │  ├─ 崩溃恢复：事件溯源 + 幂等分类 + 检查点               │
 │  └─ 密钥管理：系统凭据库加密，只写不读                    │
 └─────────────────────────────────────────────────────────┘
 ```
+
+前端的「工作日志（Work Log）」把一次任务的全部内部工作——规划、记忆召回、每轮
+思考、每次工具调用、复核纠偏、长任务续段、上下文压缩、等待授权、闭环校验——收敛
+成回答上方的一张可折叠卡片，并给出「已闭环 / 部分完成 / 需要你决定 / 失败」的
+结论与依据。需要授权的工具就在对应步骤里内联「批准 / 拒绝」。
 
 ---
 
@@ -43,7 +49,7 @@
 
 ```cmd
 build.cmd exe        REM 产出 dist\ximo-agent.exe
-build.cmd package    REM 产出 dist\ximo-agent-v2.0.0.zip（含 exe + migrations + 配置）
+build.cmd package    REM 产出 dist\ximo-agent-v2.3.0.zip（含 exe + migrations + 配置）
 ```
 
 需要 Go 1.27+。若依赖拉取失败，先设好代理：
@@ -59,6 +65,8 @@ cd frontend
 npm install
 npm run build        REM 产出 out/
 npm run dev          REM 开发模式（热重载）
+npm run typecheck    REM tsc 双工程检查（node + web）
+npm test             REM vitest（渲染层组件与事件→步骤折叠的纯函数）
 ```
 
 ### 3. 运行
@@ -166,6 +174,29 @@ scripts\mem0\mem0-up.cmd          REM 起 mem0 服务（需 Docker Desktop，版
 [`docs/长期记忆-mem0.md`](docs/长期记忆-mem0.md)；后端安装与启停见
 [`scripts/mem0/README.md`](scripts/mem0/README.md)。
 
+### Synapse 图记忆（`internal/memory` 内已实现，尚未装配到配置）
+
+审核文档第 4 章要求把「扁平事实列表」升级成「带权图 + 扩散激活 + 赫布学习 +
+惰性衰减 + 后台整理」。后端已经实现为 `memory.SynapseBackend`（`internal/memory/synapse*.go`）：
+
+- 数据模型：`mem_nodes` / `mem_edges` / `mem_fts`（FTS5）/ `mem_recall_log`，独立库文件，不动引擎库的迁移注册表；
+- 写入流水线：脱敏 → 抽取（模型严格 JSON，失败回退规则；最多 8 条事实）→ 归一化去重 → 实体链接 → 建边 → 矛盾检测（旧节点 `superseded`）→ 单事务落库；
+- 召回：FTS5 bm25 + 可选嵌入 + 实体最长匹配 → 2 跳扩散激活（阈值 0.05、fanOut 8、hopDecay 0.6/0.35）→ 打分与预算裁剪 → 注入文本，并在每条 `Record.Metadata` 里带 `via` 路径，用来回答「为什么想起它」；
+- 学习与遗忘：赫布强化（η=0.15 向 1 饱和）、未采用边权 ×0.97、`used_with` 45 天 / `related` 90 天半衰期惰性衰减、`pinned` 不衰减；
+- 整理与迁移：`Consolidate`（去重合并 / 主题聚合 / 矛盾裁决 / 归档）+ 旧 `memories` 表幂等导入。
+
+**尚未接线**：配置层已能识别 `memory.backend: "synapse"`（`EffectiveBackend` /
+`Validate` / `Active`），但 bootstrap 还没有按该值构造后端，因此运行中的默认行为
+与本次改动前完全一致（审计文档的「未启用 → 请求逐字节一致」承诺仍然成立）。
+在装配完成前，请继续使用上面的 mem0 或内置 embedded 后端。
+
+同步地，`memory.recalled` 事件已在前端时间线上就绪（会渲染成「回忆 N 条相关记忆」
+步骤并可展开看路径），但引擎侧还没有发出该事件——原因同上：结构化召回结果需要
+先把 synapse 后端接进 `engine.MemoryPort`。
+
+设计细节、与审核文档 4.x 的三处偏差（FTS5 external-content 的 DDL 写法、同步触发器、
+额外索引与查询侧单字裁剪）见 `internal/memory/README-synapse.md`。
+
 ---
 
 ## 验证
@@ -176,6 +207,8 @@ build.cmd test        REM 全量测试（含 10000 run 压力测试，约 25s）
 build.cmd vet
 build.cmd fmt         REM 列出需要格式化的文件
 ```
+
+前端单独验证（在 `frontend/` 下）：`npm run typecheck` + `npm test` + `npm run build`。
 
 测试分层：
 

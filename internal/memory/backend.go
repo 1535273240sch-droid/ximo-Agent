@@ -33,6 +33,10 @@ const (
 	BackendMem0 = "mem0"
 	// BackendEmbedded 是进程内 SQLite（本包自带，零外部依赖）。
 	BackendEmbedded = "embedded"
+	// BackendSynapse 是图记忆后端（SynapseBackend：带权图 + 扩散激活 +
+	// 赫布学习 + 惰性衰减 + 后台整理，审核文档第 4 章）。它同样落在进程内的
+	// 独立 SQLite 库文件上，不需要任何外部服务。
+	BackendSynapse = "synapse"
 )
 
 var _ Backend = (*Client)(nil)

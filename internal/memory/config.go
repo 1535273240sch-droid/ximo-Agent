@@ -48,9 +48,10 @@ const (
 type Config struct {
 	// Enabled 总开关。为假时引擎行为与没有本特性完全一致。
 	Enabled bool
-	// Backend 选择存储后端：BackendMem0（HTTP，需外部服务）或 BackendEmbedded
-	// （进程内 SQLite，零依赖）。留空表示按 Endpoint 推断：填了 endpoint 走 mem0，
-	// 没填则走进程内后端 —— 这样"打开开关就能用"是最短路径。
+	// Backend 选择存储后端：BackendMem0（HTTP，需外部服务）、BackendEmbedded
+	// （进程内扁平 SQLite）或 BackendSynapse（进程内图记忆，见 synapse*.go）。
+	// 留空表示按 Endpoint 推断：填了 endpoint 走 mem0，没填则走进程内后端 ——
+	// 这样"打开开关就能用"是最短路径。
 	Backend string
 	// Endpoint 是 mem0 服务地址，例如 http://127.0.0.1:8888（上游 compose 的 API
 	// 宿主端口；3000 是 dashboard，/memories 与 /search 在它上面会 404）。
@@ -134,10 +135,13 @@ func (c Config) Active() bool {
 	if !c.Enabled {
 		return false
 	}
-	if c.EffectiveBackend() == BackendEmbedded {
+	switch c.EffectiveBackend() {
+	case BackendEmbedded, BackendSynapse:
+		// 两个进程内后端都不需要 endpoint。
 		return true
+	default:
+		return c.Endpoint != ""
 	}
-	return c.Endpoint != ""
 }
 
 // EffectiveBackend 返回生效的后端名：显式配置优先，留空则按 endpoint 推断。
@@ -145,6 +149,8 @@ func (c Config) EffectiveBackend() string {
 	switch strings.ToLower(strings.TrimSpace(c.Backend)) {
 	case BackendEmbedded, "local", "sqlite", "builtin":
 		return BackendEmbedded
+	case BackendSynapse, "graph":
+		return BackendSynapse
 	case BackendMem0, "http":
 		return BackendMem0
 	case "":
@@ -165,10 +171,11 @@ func (c Config) Validate() error {
 		return nil
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Backend)) {
-	case "", BackendMem0, "http", BackendEmbedded, "local", "sqlite", "builtin":
+	case "", BackendMem0, "http", BackendEmbedded, "local", "sqlite", "builtin",
+		BackendSynapse, "graph":
 	default:
-		return fmt.Errorf("memory: backend 只能是 %q 或 %q，当前为 %q",
-			BackendMem0, BackendEmbedded, c.Backend)
+		return fmt.Errorf("memory: backend 只能是 %q、%q 或 %q，当前为 %q",
+			BackendMem0, BackendEmbedded, BackendSynapse, c.Backend)
 	}
 	if c.EffectiveBackend() == BackendMem0 {
 		if c.Endpoint == "" {

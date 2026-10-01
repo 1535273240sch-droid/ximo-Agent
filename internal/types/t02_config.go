@@ -231,7 +231,26 @@ type AgentConfig struct {
 	// StopAfterAllTodosDone reproduces the v1 behaviour of stripping tools and
 	// forcing a final summary once todo_write reports everything complete.
 	StopAfterAllTodosDone bool
+	// MaxLengthContinues caps how many times the loop re-asks after a response
+	// whose finish_reason was "length". It was a hard-coded 3 in the design
+	// note (F3); it lives here so the cap is configuration rather than a
+	// buried literal. Zero means DefaultMaxLengthContinues.
+	MaxLengthContinues int
+	// EmptyAnswerRetries caps how many times an empty final answer is retried
+	// before the run is failed (F4). It is 1 by design: one second chance, not
+	// an unbounded exchange with a model that has stopped producing text.
+	// Negative means "do not retry at all".
+	EmptyAnswerRetries int
 }
+
+const (
+	// DefaultMaxLengthContinues is the documented F3 cap: a response truncated
+	// by the output-length limit is continued at most this many times before
+	// the answer is accepted as partial.
+	DefaultMaxLengthContinues = 3
+	// DefaultEmptyAnswerRetries is the documented F4 retry count.
+	DefaultEmptyAnswerRetries = 1
+)
 
 // DefaultAgentConfig returns the v1-equivalent defaults.
 func DefaultAgentConfig() AgentConfig {
@@ -248,6 +267,8 @@ func DefaultAgentConfig() AgentConfig {
 		ToolExecTimeout:          DefaultToolExecTimeout,
 		SupervisionTimeout:       DefaultSupervisionTimeout,
 		StopAfterAllTodosDone:    true,
+		MaxLengthContinues:       DefaultMaxLengthContinues,
+		EmptyAnswerRetries:       DefaultEmptyAnswerRetries,
 	}
 }
 
