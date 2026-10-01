@@ -91,7 +91,13 @@
 
 新增 `vitest` + `jsdom` + `@testing-library/react`（`frontend/vitest.config.ts`），
 并补上 `npm test`。覆盖模型选择器的定位 / 键盘 / 持久化，以及「事件 → 步骤」纯
-函数折叠器。
+函数折叠器（共 31 个用例）。
+
+配套的工程债清理：前端包管理器统一到 **pnpm**（`frontend/pnpm-lock.yaml` 是唯一
+锁文件，`package-lock.json` 不再维护），发布工作流同步改为
+`pnpm install --frozen-lockfile` + `pnpm run typecheck` + `pnpm test` +
+`pnpm exec electron-vite build`。第一次 tag 构建就是因为 CI 仍用 `npm ci` 读旧
+的 `package-lock.json` 而失败，这次一并修好。
 
 ---
 

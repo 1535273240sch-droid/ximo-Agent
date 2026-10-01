@@ -47,26 +47,37 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+
+      # 前端的包管理器是 pnpm（frontend/pnpm-lock.yaml 是唯一的锁文件）。
+      # 这里用 pnpm 而不是 npm ci：依赖只维护一份锁文件，避免
+      # package-lock.json 与 pnpm-lock.yaml 各自漂移、CI 拿旧锁文件装新依赖
+      # 直接失败（v2.3.0 的第一次 tag 构建正是这样失败的）。
+      - name: Enable pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Install frontend deps
         working-directory: frontend
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         working-directory: frontend
-        run: npm run typecheck
+        run: pnpm run typecheck
+
+      - name: Frontend unit tests
+        working-directory: frontend
+        run: pnpm test
 
       - name: Build renderer/main/preload
         working-directory: frontend
-        run: npx electron-vite build
+        run: pnpm exec electron-vite build
 
       - name: Build installer
         working-directory: frontend
         env:
           CSC_IDENTITY_AUTO_SIGNING: 'false'
-        run: npx electron-builder --win --publish never
+        run: pnpm exec electron-builder --win --publish never
 
       - name: Package backend zip
         shell: pwsh
