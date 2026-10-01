@@ -217,6 +217,12 @@ func (o *Orchestrator) planPhase(ctx context.Context, e Expert, task string, out
 	runner.ToolNames = nil // 规划阶段不给工具
 	runner.CandidateOrder = o.candidatesFor(e)
 	runner.MaxFailovers = 1 // 规划是锦上添花，不值得为它轮询所有候选
+	// 规划阶段同样要带上专家身份：不带的话，RunSubAgent 会退回「从系统提示词
+	// 反解身份」，而规划阶段的系统提示词是 e2ePlanInstruction()（一段与专家无关
+	// 的通用指令），反解结果必然是 unknown-expert —— 规划阶段产出的工作事件
+	// 就会挂在一位不存在的专家名下，前端时间线里出现「unknown-expert 开始处理」。
+	runner.ExpertID = e.ID
+	runner.ExpertName = e.Name
 
 	res, err := RunSubAgent(ctx, SubAgentRequest{
 		SystemPrompt: e2ePlanInstruction(),
@@ -301,7 +307,11 @@ func buildInfoContent(e Expert, analysis ExpertAnalysis, systemPrompt string) st
 	}
 	fmt.Fprintf(&b, "\n---\n\n### 🔄 %s\n\n---\n\n", analysis.Workflow)
 	fmt.Fprintf(&b, "### 📝 系统提示词\n\n%s\n\n---\n\n", systemPrompt)
-	fmt.Fprintf(&b, "> 主 Agent 可基于以上分析，使用 agent_expert(action=\"activate\", expert_id=\"%s\", task=\"具体任务描述\") 让该专家带工具独立处理子任务。", e.ID)
+	// 这里曾经写着「主 Agent 可调用 agent_expert(action="activate", …)」——
+	// 而 v2 从未注册过 agent_expert 这个工具（ToolDefinitionName 全仓零引用），
+	// 主模型照着这段指引去调用，只会得到一次「未知工具」的失败往返。文案必须
+	// 描述真实可达的能力：专家由**用户**选择后由引擎直接执行，不经过主模型。
+	fmt.Fprintf(&b, "> 该专家由用户在选择后由引擎直接执行（两阶段编排 + 子 Agent），不需要主 Agent 再调用任何工具转交。如需把任务交给这位专家，请在输入框旁选择专家（`expert_id=%s`）后重新提交。", e.ID)
 	return b.String()
 }
 
@@ -413,5 +423,10 @@ func (o *Orchestrator) Search(query string) (string, error) {
 	return b.String(), nil
 }
 
-// ToolDefinitionName 返回 agent_expert 工具名（供任务 04 注册时引用）。
+// ToolDefinitionName 是 v1 里「主 Agent 调用专家」的工具名。
+//
+// 保留它只为对齐 v1 的命名与文档；**v2 没有注册这个工具**，因此任何把它当作
+// 「已存在工具」的文案或代码都是错的：主模型看到指引后去调用只会失败一轮。
+// 专家的两条真实路径是用户手选专家（SubmitPayload.expert_id）与 Agent 集群
+// （SubmitPayload.cluster_size），都由引擎直接执行，不经过主模型的工具调用。
 const ToolDefinitionName = "agent_expert"

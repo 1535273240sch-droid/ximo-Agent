@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -166,6 +167,57 @@ type ToolRuntime struct {
 
 // compile-time 检查：*Sandbox 满足 SandboxManager。
 var _ SandboxManager = (*Sandbox)(nil)
+
+// Has 报告某个工具是否真的已注册。
+//
+// 它把注册表的「有没有这个工具」这件事实暴露给上层，供专家子 Agent 过滤自己的
+// 推荐工具集：部门映射与关键词规则推出的名单里含大量本 build 未注册的名字，
+// 放进去模型就会挑一个、执行报「工具未注册」、白烧一轮往返。
+//
+// 判定依据是运行时自己的注册表，而不是另抄一份名单——两份名单一定会漂移。
+func (rt *ToolRuntime) Has(name string) bool {
+	if rt == nil || rt.Registry == nil || name == "" {
+		return false
+	}
+	return rt.Registry.Has(name)
+}
+
+// Describe 返回某个已注册工具对模型可见的定义（描述 + 参数 JSON Schema）。
+//
+// 第三个返回值为 false 表示该工具未注册。参数以 map[string]any 形式返回，
+// 是因为消费方（专家子 Agent）要把它直接塞进 provider 的 function schema，
+// 而那里的参数天生就是任意 JSON 对象；本包的 JSONSchema 是强类型结构体，
+// 这里用一次 JSON 往返把它拍平，避免在适配层手抄每个字段。
+func (rt *ToolRuntime) Describe(name string) (string, map[string]any, bool) {
+	if rt == nil || rt.Registry == nil || name == "" {
+		return "", nil, false
+	}
+	t, ok := rt.Registry.Get(name)
+	if !ok {
+		return "", nil, false
+	}
+	def := t.Definition()
+	return def.Description, schemaToMap(def.Parameters), true
+}
+
+// schemaToMap 把强类型 JSONSchema 拍平成 provider 期望的任意 JSON 对象。
+//
+// 失败（理论上不会，因为 JSONSchema 只含可序列化字段）时返回 nil，调用方
+// 会退回空参数占位，而不是把一个半截 schema 交给模型。
+func schemaToMap(s JSONSchema) map[string]any {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // Execute 实现工具调用协议（任务02 消费）。
 func (rt *ToolRuntime) Execute(ctx context.Context, req ToolRequest) ToolResponse {

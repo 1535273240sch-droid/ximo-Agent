@@ -458,7 +458,33 @@ func (o SubAgentOptions) executeTool(
 	return provider.Message{Role: provider.RoleTool, Content: content, ToolCallID: tc.ID}
 }
 
+// ToolDescriber 是 ToolExecutor 的**可选**能力：给出某个工具的真实定义
+// （描述 + 参数 schema）。
+//
+// 为什么做成可选接口而不是往 ToolExecutor 里加方法：ToolExecutor 是任务 04/05
+// 之间冻结的契约，两边各有实现与假件；为一个「schema 更准确」的改进去改它，会
+// 让所有假件同时编译失败。装配层实现了就自动生效，没实现就退回占位 schema。
+type ToolDescriber interface {
+	// Describe 返回工具的线上定义；第二个返回值为 false 表示该工具未注册。
+	Describe(name string) (ToolDescriptor, bool)
+}
+
+// ToolDescriptor 是一个工具对模型可见的定义。
+type ToolDescriptor struct {
+	Description string
+	// Parameters 是 JSON Schema（object 根）。为空时调用方回退到空参数占位。
+	Parameters map[string]any
+}
+
 // resolveTools 过滤出实际可用的工具并构造 schema。
+//
+// 两件事都必须是真的，否则子 Agent 会拿着假工具空转：
+//
+//  1. **可用性**：只保留 `Executor.Available` 为真的工具。部门的推荐工具集里
+//     含大量本 build 未注册的名字（ui_generate / code_execute / browser_navigate…），
+//     放进去模型就会挑一个、执行报「工具未注册」、白烧一轮往返。
+//  2. **参数 schema**：用执行器给出的真实定义。旧实现对所有工具都发
+//     `{"type":"object","properties":{}}`，模型拿不到任何参数名，只能瞎猜。
 func (o SubAgentOptions) resolveTools() []provider.ToolDefinition {
 	if o.Executor == nil {
 		return nil
@@ -467,16 +493,28 @@ func (o SubAgentOptions) resolveTools() []provider.ToolDefinition {
 	if len(names) == 0 {
 		return nil
 	}
+	describer, _ := o.Executor.(ToolDescriber)
 	defs := make([]provider.ToolDefinition, 0, len(names))
 	for _, n := range names {
-		if !o.Executor.Available(n) {
+		if n == "" || !o.Executor.Available(n) {
 			continue
 		}
-		defs = append(defs, provider.ToolDefinition{
+		def := provider.ToolDefinition{
 			Name:        n,
 			Description: fmt.Sprintf("专家可用工具：%s", n),
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-		})
+		}
+		if describer != nil {
+			if d, ok := describer.Describe(n); ok {
+				if strings.TrimSpace(d.Description) != "" {
+					def.Description = d.Description
+				}
+				if len(d.Parameters) > 0 {
+					def.Parameters = d.Parameters
+				}
+			}
+		}
+		defs = append(defs, def)
 	}
 	return defs
 }

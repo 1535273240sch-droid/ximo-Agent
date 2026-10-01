@@ -255,7 +255,14 @@ export const DIVISIONS: string[] = [
   'healthcare',
 ]
 
-/** 后端目录里的真实专家总数。 */
+/**
+ * 后端目录里的真实专家总数（internal/expert/assets/agents-raw.json 的 total）。
+ *
+ * 注意它**不等于**本页可选的数量：下面的 SAMPLED 是跨部门精选样本，后端 254 位
+ * 里只有这一部分在本页有卡片。文案必须把这两个数字分开讲清楚 —— 之前界面写
+ * 「内置 254 位…点击可直接激活对话」，而实际只渲染 60 张卡片，用户搜不到另外
+ * 194 位会以为功能坏了。
+ */
 export const TOTAL_EXPERT_COUNT = 254
 
 /** 从 254 位中挑选的代表样本（覆盖全部部门）。 */
@@ -327,6 +334,29 @@ export const EXPERTS: Expert[] = SAMPLED.map((e) => ({
   ...e,
   tools: DIVISION_TOOLS[e.division] ?? []
 }))
+
+/**
+ * 本页真正渲染并可点击激活的专家数。
+ *
+ * 从 EXPERTS 派生而不是另写一个字面量：界面文案、测试与数据必须永远一致，
+ * 抄一个 60 出来只会在下次增删样本时变成新的谎言。
+ */
+export const SAMPLE_EXPERT_COUNT = EXPERTS.length
+
+/**
+ * 本页列表里各部门的数量（由 EXPERTS 派生）。
+ *
+ * 与 DIVISION_COUNTS 的区别正是这个页面的一致性缺陷：筛选条上的数字必须等于点
+ * 进去能看到的卡片数，否则「工程研发 (58)」点开只有 6 张卡，用户会以为列表被
+ * 截断了。DIVISION_COUNTS 依然保留（它描述的是后端全量目录），但界面不再用它做
+ * 计数展示。
+ */
+export const SAMPLE_DIVISION_COUNTS: Record<string, number> = EXPERTS.reduce<
+  Record<string, number>
+>((acc, e) => {
+  acc[e.division] = (acc[e.division] ?? 0) + 1
+  return acc
+}, {})
 
 /** 非 16 进制颜色名的兜底色，保证 tint 永远产出合法 CSS。 */
 const FALLBACK_HEX = '#8A8A8A'

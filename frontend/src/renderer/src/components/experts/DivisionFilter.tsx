@@ -1,4 +1,6 @@
-import { DIVISION_COUNTS, DIVISION_LABELS, DIVISIONS } from './experts-data'
+// 计数用 SAMPLE_DIVISION_COUNTS（本页列表里的条数），不是 DIVISION_COUNTS
+// （后端全量目录的条数）：筛选条上的数字必须等于点进去能看到的卡片数。
+import { DIVISION_LABELS, DIVISIONS, SAMPLE_DIVISION_COUNTS } from './experts-data'
 
 export const ALL_DIVISIONS = ''
 
@@ -8,7 +10,7 @@ interface DivisionFilterProps {
 }
 
 export function DivisionFilter({ selected, onSelect }: DivisionFilterProps): React.JSX.Element {
-  const totalCount = Object.values(DIVISION_COUNTS).reduce((sum, n) => sum + n, 0)
+  const totalCount = Object.values(SAMPLE_DIVISION_COUNTS).reduce((sum, n) => sum + n, 0)
 
   return (
     <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[12.5px] select-none">
@@ -28,7 +30,7 @@ export function DivisionFilter({ selected, onSelect }: DivisionFilterProps): Rea
       {DIVISIONS.map((div) => {
         const isActive = selected === div
         const label = DIVISION_LABELS[div] ?? div
-        const count = DIVISION_COUNTS[div] ?? 0
+        const count = SAMPLE_DIVISION_COUNTS[div] ?? 0
 
         return (
           <button

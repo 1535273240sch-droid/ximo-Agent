@@ -6,23 +6,10 @@ import { ALL_DIVISIONS, DivisionFilter } from './DivisionFilter'
 import {
   DIVISION_LABELS,
   EXPERTS,
+  SAMPLE_EXPERT_COUNT,
   TOTAL_EXPERT_COUNT,
   type Expert
 } from './experts-data'
-
-function buildExpertSystemPrompt(e: Expert): string {
-  const parts: string[] = []
-  parts.push(`你是【${e.name}】(${e.id})。`)
-  if (e.vibe) {
-    parts.push(`执业风格与心智态度：${e.vibe}`)
-  }
-  parts.push(`核心职责与专业领域：${e.description}`)
-  if (e.tools && e.tools.length > 0) {
-    parts.push(`你擅长并优先调用以下工具链：${e.tools.join(', ')}。`)
-  }
-  parts.push('请始终以该专业专家的身份与口吻展开深度分析并推进任务，注重严谨性与落地可行性。')
-  return parts.join('\n\n')
-}
 
 export function ExpertsView(): React.JSX.Element {
   const [selectedDivision, setSelectedDivision] = useState(ALL_DIVISIONS)
@@ -51,16 +38,20 @@ export function ExpertsView(): React.JSX.Element {
     })
   }, [selectedDivision, searchQuery])
 
+  // 这里必须带 expert_id，否则后端走的是通用主循环，「以该专家身份开启会话」只
+  // 是把一段专家口吻的 system_prompt 喂给主模型——专家库里的编排（规划阶段、
+  // 子 Agent、工具链、模型池）一个都不会启动，用户看到的答案是主模型在扮演专家。
+  //
+  // system_prompt 也不再发：后端专家路径用的是 internal/expert.BuildSystemPrompt
+  // 依据同一份专家定义生成的人设提示词（前端这份是它的手抄副本，且后端根本不读
+  // SubmitRequest.SystemPrompt），留着只会让两边措辞漂移。
   const handleStartChat = (e: Expert): void => {
     if (!activeSessionId) {
       createSession()
     }
-    const systemPrompt = buildExpertSystemPrompt(e)
     const prompt = `以${e.name}的专业身份介入，为我分析并规划接下来的工作。`
 
-    void submit(prompt, {
-      system_prompt: systemPrompt
-    })
+    void submit(prompt, { expert_id: e.id })
     setView('chat')
   }
 
@@ -74,7 +65,8 @@ export function ExpertsView(): React.JSX.Element {
                 专家角色库
               </h1>
               <p className="mt-1 text-[13px] text-ink-muted">
-                内置 {TOTAL_EXPERT_COUNT} 位涵盖各专业领域的专家智能体，点击可直接激活对话
+                本页为跨部门精选的 {SAMPLE_EXPERT_COUNT} 位，点击可直接以该专家身份开启会话；专家库共{' '}
+                {TOTAL_EXPERT_COUNT} 位，其余专家由「Agent 集群」模式按任务自动选用
               </p>
             </div>
 

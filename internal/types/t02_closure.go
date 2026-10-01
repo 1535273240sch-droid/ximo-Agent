@@ -67,6 +67,14 @@ const (
 	CheckToolErrorsResolved = "tool_errors_resolved"
 	CheckBudgetOK           = "budget_ok"
 	CheckReviewOK           = "review_ok"
+	// CheckExpertsExecuted applies only to the expert paths (a hand-picked expert
+	// or an Agent cluster). It is the one piece of evidence the main loop's
+	// tracker cannot carry: how many of the dispatched experts really ran,
+	// as opposed to degrading to "manual guidance" text. The report already
+	// treated a degraded expert's fallback text as an answer (it is non-empty),
+	// which is exactly the "looks finished but nothing ran" case the closure
+	// report exists to catch.
+	CheckExpertsExecuted = "experts_executed"
 )
 
 // Terminal closure reasons. They distinguish "the loop decided the task was
@@ -103,6 +111,11 @@ type ClosureInput struct {
 	Answer string
 	// WaitingUser marks a park, which is needs_user rather than partial.
 	WaitingUser bool
+	// Degraded counts experts that were dispatched but did not really run (their
+	// content is fallback guidance). Zero means "not applicable" for paths that
+	// dispatch no experts, so the check is omitted rather than reported as
+	// passing — same rule as the todo/tool checks.
+	Degraded int
 }
 
 // BuildRunClosureReport turns the tracker's accumulated evidence plus the
@@ -177,6 +190,20 @@ func BuildRunClosureReport(tr *ClosureTracker, in ClosureInput) RunClosureReport
 		rep.Checks = append(rep.Checks, review)
 	}
 
+	// 7. experts_executed — only for the expert paths that dispatched experts and
+	// saw at least one degrade. Appended last on purpose: the order of the six
+	// checks above is relied on by the loop, its tests and the UI, and this one
+	// never applies to a main-loop run.
+	if in.Degraded > 0 {
+		rep.Checks = append(rep.Checks, ClosureCheck{
+			ID:    CheckExpertsExecuted,
+			Label: "专家全部真正执行",
+			Pass:  false,
+			Note: itoa(in.Degraded) +
+				" 位专家未真正执行，其内容为降级指引（不代表专家结论）",
+		})
+	}
+
 	rep.Verdict = verdictFor(rep.Checks, in)
 	rep.Incomplete = rep.Verdict != ClosureClosed
 	return rep
@@ -209,6 +236,13 @@ func verdictFor(checks []ClosureCheck, in ClosureInput) string {
 		return ClosurePartial
 	}
 	if ok, present := pass[CheckReviewOK]; present && !ok {
+		return ClosurePartial
+	}
+	// A run that dispatched experts but had some of them degrade is "partial",
+	// not "closed": part of the requested work demonstrably did not happen. The
+	// failed (not partial) case is already handled by answer_nonempty above,
+	// because the expert paths report a degraded expert with an empty answer.
+	if ok, present := pass[CheckExpertsExecuted]; present && !ok {
 		return ClosurePartial
 	}
 	return ClosureClosed

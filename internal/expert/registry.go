@@ -132,27 +132,54 @@ func (r *Registry) rebuild(custom []Expert) {
 }
 
 // Load 加载并返回全部专家（内置 + 自定义）。
+//
+// 结果会被缓存：包注释承诺的「embed → lazy load → immutable」要求加载只付出
+// 一次成本，而这里的调用方（Get / Search / Count / ListByDivision）在每次专家
+// 激活、每次集群选人都要问一次。此前 Load 无条件重建 254 条索引，于是
+// SaveCustom / DeleteCustom 里的「使缓存失效」成了死代码 —— 缓存从来没有生效过，
+// 失效也就没有意义。
+//
+// 缓存判据是 r.all != nil（rebuild 必然写入非 nil 切片），失效由 SaveCustom /
+// DeleteCustom 显式完成：只有这两个入口能改 customStore，所以不存在外部写入
+// 导致缓存过期的问题。
 func (r *Registry) Load() ([]Expert, error) {
 	if err := r.loadBuiltin(); err != nil {
 		return nil, err
 	}
 
-	var custom []Expert
-	if r.customStore != nil {
-		c, err := r.customStore.Load()
-		if err != nil {
-			// 自定义读取失败不应让内置专家不可用 —— 降级为纯内置。
-			custom = nil
-		} else {
-			custom = c
-		}
+	// 快路径：已建好索引就直接复制一份返回。
+	r.mu.RLock()
+	if r.all != nil {
+		out := make([]Expert, len(r.all))
+		copy(out, r.all)
+		r.mu.RUnlock()
+		return out, nil
 	}
+	r.mu.RUnlock()
 
+	// 慢路径：读自定义 + 重建索引，全程持写锁。
+	//
+	// 自定义读取必须在锁内完成：否则「读到旧列表」与并发 SaveCustom 的失效
+	// 可以交错（A 读列表 → B 保存并失效 → A 拿锁重建），新建的自定义专家会被
+	// 一次陈旧的 rebuild 覆盖掉，直到下一次失效才出现。storage.Load 是纯读，
+	// 不会回调注册表，因此这里不构成死锁风险。
 	r.mu.Lock()
-	r.rebuild(custom)
+	defer r.mu.Unlock()
+	if r.all == nil {
+		var custom []Expert
+		if r.customStore != nil {
+			c, err := r.customStore.Load()
+			if err != nil {
+				// 自定义读取失败不应让内置专家不可用 —— 降级为纯内置。
+				custom = nil
+			} else {
+				custom = c
+			}
+		}
+		r.rebuild(custom)
+	}
 	out := make([]Expert, len(r.all))
 	copy(out, r.all)
-	r.mu.Unlock()
 	return out, nil
 }
 

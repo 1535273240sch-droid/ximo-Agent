@@ -51,6 +51,54 @@ func newToolRuntimeAdapter(rt *tool.ToolRuntime, defaultMode tool.Mode) *toolRun
 	return &toolRuntimeAdapter{rt: rt, defaultMode: defaultMode}
 }
 
+// toolAvailabilityProbe 是内层运行时「这个工具到底注册了没有」的能力探测。
+//
+// 用可选接口而不是往 toolExecutor 里加方法：toolExecutor 只写适配器真正依赖的
+// 最小表面，加了方法所有测试替身都得跟着改。内层换成别的实现时，没有这个能力
+// 就退化成「未知」，而不是假定存在——假定存在正是专家子 Agent 把 ui_generate
+// 这类本 build 没注册的工具塞给模型的根因。
+type toolAvailabilityProbe interface {
+	Has(name string) bool
+}
+
+// toolDescriberProbe 是内层运行时导出工具真实定义的能力探测。
+type toolDescriberProbe interface {
+	Describe(name string) (string, map[string]any, bool)
+}
+
+// Has 报告某个工具是否真的可以执行。
+//
+// 与 ports.ToolRuntime 的 Execute 分开表达：Execute 回答「怎么执行」，
+// Has 回答「这个 build 里有没有」。调用方（专家子 Agent）必须先问后者，
+// 否则会把从未注册的工具名写进 function schema，模型选中后必然报「工具未注册」，
+// 白烧一轮往返，还会让子 Agent 以为自己有能力而实际没有。
+func (a *toolRuntimeAdapter) Has(name string) bool {
+	if a == nil || name == "" {
+		return false
+	}
+	probe, ok := a.rt.(toolAvailabilityProbe)
+	if !ok {
+		return false
+	}
+	return probe.Has(name)
+}
+
+// Describe 返回工具对模型可见的真实定义（描述 + 参数 schema）。
+//
+// 第二个返回值为 false 表示查不到。查不到时调用方应回退到空参数占位，
+// 而不是编一份看起来很像的 schema——编出来的必填参数模型一定会照着填，
+// 然后被工具的参数校验拒绝。
+func (a *toolRuntimeAdapter) Describe(name string) (string, map[string]any, bool) {
+	if a == nil || name == "" {
+		return "", nil, false
+	}
+	probe, ok := a.rt.(toolDescriberProbe)
+	if !ok {
+		return "", nil, false
+	}
+	return probe.Describe(name)
+}
+
 // Execute 实现 ports.ToolRuntime。
 func (a *toolRuntimeAdapter) Execute(ctx context.Context, req ports.ToolRequest) (types.ToolResult, error) {
 	mode := tool.Mode(req.AutoModeLevel)

@@ -158,14 +158,20 @@ func TestRegistryCustomOverridesBuiltin(t *testing.T) {
 	target := list[0]
 
 	// 用同 ID 保存一个自定义版本。
-	store.save(Expert{
+	//
+	// 走 r.SaveCustom 而不是直接写 store：注册表现在缓存索引（embed → lazy →
+	// immutable），只有通过注册表保存/删除才会失效重建。直接改 store 相当于绕过
+	// 门面写库，生产中不存在这样的写入方 —— 存储层只被注册表持有。
+	if err := r.SaveCustom(Expert{
 		ID:          target.ID,
 		Division:    target.Division,
 		Name:        "被覆盖的名字",
 		Description: "自定义描述",
 		Personality: "自定义人格",
 		Vibe:        "自定义风格",
-	})
+	}); err != nil {
+		t.Fatalf("SaveCustom: %v", err)
+	}
 
 	got, ok := r.Get(target.ID)
 	if !ok {
