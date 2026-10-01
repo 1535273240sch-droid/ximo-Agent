@@ -70,8 +70,11 @@
 
 ```cmd
 build.cmd exe        REM 产出 dist\ximo-agent.exe
-build.cmd package    REM 产出 dist\ximo-agent-v2.5.0.zip（含 exe + migrations + 配置）
+build.cmd package    REM 产出 dist\ximo-agent-<版本>.zip（含 exe + migrations + 配置）
 ```
+
+> 包名里的 `<版本>` 取自 `build.cmd` 顶部的 `VERSION`，这里刻意不写死一个版本号 ——
+> 写死的数字每次发版都会过期，读者会拿着一个不存在的文件名去找产物。
 
 需要 Go 1.27+。若依赖拉取失败，先设好代理：
 
