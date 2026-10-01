@@ -1,12 +1,16 @@
-import { DIVISION_LABELS, tintColor, type Expert } from './experts-data'
+import { divisionLabel, tintColor, type Expert } from './experts-data'
+
+/** 专家没填 emoji 时的兜底头像：不能渲染空白方块。 */
+const DEFAULT_EMOJI = '🤖'
 
 export function ExpertEmoji({
   emoji,
   color,
   size = 'md'
 }: {
-  emoji: string
-  color: string
+  /** 可空：目录里的 emoji/color 都是可选字段，判空交给这里而不是每个调用点。 */
+  emoji?: string
+  color?: string
   size?: 'sm' | 'md' | 'lg'
 }): React.JSX.Element {
   const bg = tintColor(color)
@@ -22,7 +26,7 @@ export function ExpertEmoji({
       style={{ backgroundColor: bg }}
       aria-hidden="true"
     >
-      {emoji}
+      {emoji || DEFAULT_EMOJI}
     </span>
   )
 }
@@ -33,7 +37,7 @@ interface ExpertCardProps {
 }
 
 export function ExpertCard({ expert, onClick }: ExpertCardProps): React.JSX.Element {
-  const divisionLabel = DIVISION_LABELS[expert.division] ?? expert.division
+  const label = divisionLabel(expert.division)
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -57,9 +61,15 @@ export function ExpertCard({ expert, onClick }: ExpertCardProps): React.JSX.Elem
             <h3 className="truncate font-display text-[14px] font-semibold text-ink">
               {expert.name}
             </h3>
+            {/* 自定义标记必须显眼：只有自定义专家能编辑/删除，用户要先能认出它们。 */}
+            {expert.custom === true && (
+              <span className="shrink-0 rounded border border-accent/30 bg-accent/15 px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
+                自定义
+              </span>
+            )}
           </div>
           <p className="mt-0.5 truncate text-[12px] font-medium uppercase tracking-wider text-ink-muted">
-            {divisionLabel}
+            {label}
           </p>
         </div>
       </div>

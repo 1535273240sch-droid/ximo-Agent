@@ -249,7 +249,8 @@ func TestExpertRunTimeoutIsBoundedByRunBudget(t *testing.T) {
 	if h.engine.cfg.Scheduler.Limits.MaxRunDuration <= 0 {
 		t.Fatal("test config has no run duration budget")
 	}
-	orch := h.engine.newExpertOrchestrator("")
+	// nil = 不要工作阶段上报：这条用例只关心装配出来的编排器读到的是真目录。
+	orch := h.engine.newExpertOrchestrator("", nil)
 	if orch == nil {
 		t.Fatal("newExpertOrchestrator returned nil for a configured engine")
 	}

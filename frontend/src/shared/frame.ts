@@ -85,7 +85,17 @@ export const FrameType = {
   MemoryExport: 'system.memory.export',
   MemoryImport: 'system.memory.import',
   MemoryStats: 'system.memory.stats',
-  MemoryClear: 'system.memory.clear'
+  MemoryClear: 'system.memory.clear',
+  /**
+   * 专家目录读写面（v2.6.0）。
+   *
+   * 与记忆同一层理由：内置 254 位专家 + 用户自建专家是跨 run 的长期资产。
+   * 名字与 Go 侧 ipc.TypeExpert* 逐字一致——拼错不会报错，只会表现为
+   * 「专家库永远取不到数据」。
+   */
+  ExpertList: 'system.expert.list',
+  ExpertSave: 'system.expert.save',
+  ExpertDelete: 'system.expert.delete'
 } as const
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType]

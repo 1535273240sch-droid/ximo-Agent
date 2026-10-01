@@ -90,7 +90,16 @@ func (e *Engine) executeExpertRun(ctx context.Context, rec *runRecord) {
 		},
 	})
 
-	orch := e.newExpertOrchestrator(rec.request.Model)
+	// 子 Agent 的工作阶段（工具调用 / 中间消息 / 收尾）逐条进入工作日志。
+	//
+	// 没有这条回调时，界面只能看到引擎替子代理工具调用发的那条
+	// tool_call.started —— 一个永远不结束的「tool」行：真正在干活的是子代理，
+	// 而它的 StageTool/StageToolResult 此前只被折成 final_answer 里的一个计数。
+	// 取消与终态守卫在 emitExpertWork 内部（与 emitExpertPhase 同一套判据），
+	// 回调与下面的 Activate 在同一 goroutine 上同步执行，因此不需要加锁。
+	orch := e.newExpertOrchestrator(rec.request.Model, func(ev expert.WorkEvent) {
+		e.emitExpertWork(ctx, rec, ev)
+	})
 	// 阶段跃迁事件：让"专家当前在规划还是在实施"可见（前端工作卡片的数据源）。
 	// 回调与下面的 Activate 在同一个 goroutine 上同步执行，因此这里不需要加锁。
 	// run 被取消后立刻静默，不再向外广播废弃状态。
@@ -200,7 +209,11 @@ func (e *Engine) executeExpertRun(ctx context.Context, rec *runRecord) {
 // per-run 回调。
 //
 // model 是本次 run 用户显式选择的模型（SubmitPayload.model，可为空）。
-func (e *Engine) newExpertOrchestrator(model string) *expert.Orchestrator {
+//
+// onEvent 是子 Agent 工作阶段（StageStarted/StageMessage/StageTool/StageFinished）
+// 的上报口，可为 nil（nil = 只执行不上报，与改动前一致）。集群路径同样用它把
+// 每位成员的工作推进时间线，见 cluster_run.go。
+func (e *Engine) newExpertOrchestrator(model string, onEvent func(expert.WorkEvent)) *expert.Orchestrator {
 	opts := expert.OrchestratorOptions{
 		Registry: e.expertRegistry,
 		// 两阶段编排全开：这是 v2 相对 v1 的核心增量（v1 的编排逻辑藏在 prompt
@@ -221,6 +234,12 @@ func (e *Engine) newExpertOrchestrator(model string) *expert.Orchestrator {
 		// 「同时在跑的子代理数 ≤ 8」对专家直连与集群都必须成立，否则就是两个
 		// 各配 8 槽的半吊子池。
 		Resources: e.Scheduler().Resources(),
+	}
+
+	// 只在非 nil 时挂上执行回调：nil 表示本次调用不需要工作阶段上报，
+	// RunSubAgent 那边的回调分支本来就不会执行（语义与不赋值完全一致）。
+	if onEvent != nil {
+		opts.Runner.OnEvent = onEvent
 	}
 
 	// 用户显式选了模型 → 这一次专家执行就用它，且不挂模型池。
@@ -363,6 +382,98 @@ func expertPhaseMessage(ph expert.PhaseEvent) string {
 	default:
 		return fmt.Sprintf("专家 %s：%s", ph.ExpertName, ph.Phase)
 	}
+}
+
+// emitExpertWork 把子 Agent 的一条工作阶段推进时间线（Work Log）。
+//
+// 为什么需要它：手选专家与集群路径里真正干活的是子 Agent，而主循环的
+// round/tool 事件描述的是**主 Agent** 自己的回合与工具调用 —— 两条路径平行，
+// 主循环的事件根本不会为子代理产生。改动前子 Agent 的阶段只被收集进
+// Outcome.Events，最后折成 final_answer 里的一个 workEvents 计数就丢掉，
+// 于是界面只剩「tool」那一行（引擎为子代理工具调用发的 tool_call.started），
+// 既不显示调用了什么工具、也永远不结束。这里让每个阶段原样落进持久日志。
+//
+// 两条守卫与 emitExpertPhase 完全一致：
+//
+//  1. run 已进终态（用户在子 Agent 跑到一半取消）时绝不再写。终态之后事件流已
+//     关闭，再追加一条带 State 的事件会把 foldEvents「取最后一个带 State 的事件」
+//     的折叠结果拽回 thinking，run 看起来永远不是终态；
+//  2. ctx 已取消时立刻静默：子 Agent 在 API 调用被取消后仍会上报一条
+//     StageFinished（subagent.go 先 emit 再判 ctx），放它进来就等于给已取消的
+//     run 追加一条幽灵步骤。
+func (e *Engine) emitExpertWork(ctx context.Context, rec *runRecord, ev expert.WorkEvent) {
+	if ctx.Err() != nil || rec.terminal() {
+		return
+	}
+
+	// State 取 run 当时的真实状态；取不到有效值时留空，而不是写死 thinking ——
+	// 写死的状态会把重放折叠的结果带偏（与 emitRunClosure 的约束 2 同理）。
+	state := rec.state()
+	if !state.Valid() {
+		state = ""
+	}
+
+	data := map[string]any{"timestamp": ev.Timestamp}
+	// 空字符串不入载荷：前端按「有值才渲染」处理，空串只会造出无意义的空行。
+	// 所有文本先过 RedactString —— 工具参数与结果正是最容易夹带密钥的两处。
+	for _, kv := range []struct{ key, val string }{
+		{"expertId", ev.ExpertID},
+		{"expertName", ev.ExpertName},
+		{"stage", string(ev.Stage)},
+		{"detail", ev.Detail},
+		{"toolArgs", ev.ToolArgs},
+		{"result", ev.Result},
+	} {
+		if s := types.RedactString(kv.val); s != "" {
+			data[kv.key] = s
+		}
+	}
+
+	e.publishAndAppend(ctx, types.Event{
+		RunID:     rec.runID(),
+		SessionID: rec.sessionID(),
+		Type:      types.EventExpertWork,
+		State:     state,
+		Timestamp: time.Now(),
+		Message:   types.RedactString(expertWorkMessage(ev)),
+		Data:      data,
+	})
+}
+
+// expertWorkMessage 给一条子 Agent 工作事件一句人类可读的说明。
+//
+// 不引用原始工具参数（那是 Data.toolArgs 的事）：消息行要能一眼扫过，
+// 把参数塞进来只会让时间线变成一堵墙。
+func expertWorkMessage(ev expert.WorkEvent) string {
+	name := ev.ExpertName
+	if name == "" {
+		// 身份缺失时退到 ID：宁可显示一个 ID，也不要出现「专家  已完成」这种
+		// 认不出是谁的行。
+		name = ev.ExpertID
+	}
+	switch ev.Stage {
+	case expert.StageStarted:
+		return fmt.Sprintf("专家 %s 开始处理任务", name)
+	case expert.StageTool:
+		// Detail 形如「调用工具 file_read」，正是这一行要说的信息。
+		return fmt.Sprintf("专家 %s：%s", name, truncateExpertWorkText(ev.Detail, 120))
+	case expert.StageToolResult:
+		return fmt.Sprintf("专家 %s：工具返回 %s", name, truncateExpertWorkText(ev.Detail, 120))
+	case expert.StageFinished:
+		return fmt.Sprintf("专家 %s 已完成", name)
+	default:
+		// StageMessage 及其它阶段：Detail 就是内容摘要。
+		return fmt.Sprintf("专家 %s：%s", name, truncateExpertWorkText(ev.Detail, 120))
+	}
+}
+
+// truncateExpertWorkText 按字符（非字节）截断消息里的长文本，避免切坏 UTF-8。
+func truncateExpertWorkText(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
 
 // publishAndAppend 把事件写入持久日志并推送。

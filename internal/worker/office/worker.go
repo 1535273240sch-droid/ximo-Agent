@@ -399,44 +399,97 @@ func exeName() string {
 
 // resolvePath 校验并解析文档路径到 AllowedRoots 内。
 func (w *Worker) resolvePath(p string) (string, error) {
-	abs, err := filepath.Abs(p)
+	abs, err := canonicalize(p)
 	if err != nil {
-		return "", fmt.Errorf("%w: 非法路径 %q", worker.ErrInvalidArgument, p)
+		return "", err
 	}
-	// symlink 解析（防越权）。
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = real
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("%w: 路径无法解析: %v", worker.ErrInvalidArgument, err)
-	}
-	abs = filepath.Clean(abs)
 
 	if len(w.cfg.AllowedRoots) == 0 {
 		return "", fmt.Errorf("%w: office worker 未配置 allowed_roots，拒绝文件操作（fail-closed）",
 			worker.ErrPolicyDenied)
 	}
 	for _, root := range w.cfg.AllowedRoots {
-		r, err := filepath.Abs(root)
+		// 空 root 会被 filepath.Abs 解释成"当前工作目录"，等于凭空放宽白名单：
+		// 配置写错一个空串不应该让 cwd 变成合法根，这里直接跳过（fail-closed）。
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		r, err := canonicalize(root)
 		if err != nil {
 			continue
 		}
-		if real, err := filepath.EvalSymlinks(r); err == nil {
-			r = real
-		}
-		r = filepath.Clean(r)
-		if abs == r {
+		if isWithinRoot(r, abs) {
 			return abs, nil
 		}
-		rel, err := filepath.Rel(r, abs)
-		if err != nil {
-			continue
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			continue
-		}
-		return abs, nil
 	}
 	return "", fmt.Errorf("%w: 路径 %q 不在 allowed_roots 内", worker.ErrPolicyDenied, p)
+}
+
+// canonicalize 把路径规范化成"可比较形式"，供白名单包含性判断使用。
+//
+// 为什么不能只对整条路径做一次 filepath.EvalSymlinks：EvalSymlinks 对**尚不存在**
+// 的路径直接返回 IsNotExist，而 create/add 的目标文件本来就常常还不存在。此时旧实现
+// 会静默退回未规范化的原字符串，于是包含性判断变成"一个规范化过的 root"对"一串用户
+// 原样输入的路径"做字符串比较，同一个目录的两种等价写法会被判成两个不同位置：
+//
+//	Windows 的 8.3 短名 C:\Users\ADMINI~1\... 与长名 C:\Users\Administrator\...，
+//	以及未被解析的 symlink 前缀，都会因此产生**假性越权拒绝**。
+//	（t.TempDir() 走 %TEMP%，本机 %TEMP% 恰好是短名，就会踩到这个坑。）
+//
+// 所以改为逐级向上找到"最长的已存在前缀"，只对它做 EvalSymlinks（顺带把短名还原成
+// 长名、把 symlink 解析掉），再把尾部不存在的部分拼回去。两侧都这样处理后，比较的是
+// 同一套规范化结果，而不是用户恰好写出的那串字符。
+func canonicalize(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("%w: 非法路径 %q", worker.ErrInvalidArgument, p)
+	}
+	abs = filepath.Clean(abs)
+
+	// rest 累积"尾部尚未创建"的部分，从最深层往上拼回。
+	rest := ""
+	cur := abs
+	for {
+		real, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			return filepath.Clean(filepath.Join(real, rest)), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: 路径无法解析: %v", worker.ErrInvalidArgument, err)
+		}
+		// EvalSymlinks 报"不存在"分两种情况：
+		//  1) 路径真的还没被创建（合法，create/add 的常态）；
+		//  2) 它是悬空 symlink（Lstat 成功，但链接目标不存在）。
+		// 后者的真实目标不可知，必须 fail-closed 拒绝，否则可以借悬空链接把文件写到
+		// 白名单之外，而包含性判断还以为路径在 root 里。
+		if _, lerr := os.Lstat(cur); lerr == nil {
+			return "", fmt.Errorf("%w: 路径 %q 含无法解析的符号链接: %v",
+				worker.ErrInvalidArgument, p, err)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// 连盘符根都不存在（例如盘未挂载）：无法再规范化，只能退回 Clean 后的原值。
+			return abs, nil
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}
+
+// isWithinRoot 判断规范化后的 path 是否就是 root 或位于 root 之内。
+//
+// 两个入参都必须先经过 canonicalize，否则短名/长名、大小写、symlink 的写法差异会
+// 造成误判。安全性质：既要拒绝 ".." 逃逸，也要拒绝 root=C:\ws 与 C:\ws-evil 这类
+// 共享字符串前缀的兄弟目录——所以用 filepath.Rel 逐段比较，而不是 HasPrefix。
+func isWithinRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 // snapshot 在执行写操作前备份文档（v1 的可逆写安全网）。

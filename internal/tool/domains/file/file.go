@@ -1,5 +1,5 @@
 // Package file 提供文件系统轻量工具（file_read/file_list/file_search/
-// file_write/file_delete），全部纯 Go 实现，经 Guard 做写入白名单与敏感
+// file_write/file_delete/file_edit/multi_edit），全部纯 Go 实现，经 Guard 做写入白名单与敏感
 // 文件拦截。
 package file
 
@@ -28,6 +28,8 @@ func Tools(guard *domains.Guard) []tool.Tool {
 		&listTool{guard: guard},
 		&searchTool{guard: guard},
 		&writeTool{guard: guard},
+		&editTool{guard: guard},
+		&multiEditTool{guard: guard},
 		&deleteTool{guard: guard},
 	}
 }

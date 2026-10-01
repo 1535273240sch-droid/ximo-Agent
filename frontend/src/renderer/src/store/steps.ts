@@ -16,7 +16,17 @@
 import type { ClosureReport, DurableEvent } from '@shared/types'
 
 /** 一个步骤的种类，决定图标与分组。 */
-export type StepKind = 'plan' | 'memory' | 'think' | 'tool' | 'review' | 'compact' | 'continue' | 'wait'
+export type StepKind =
+  | 'plan'
+  | 'memory'
+  | 'think'
+  | 'tool'
+  | 'review'
+  | 'compact'
+  | 'continue'
+  | 'wait'
+  /** 专家子代理（手选专家 / 集群成员）自己的工作阶段。 */
+  | 'expert'
 
 /** 一个步骤的状态。 */
 export type StepStatus = 'running' | 'done' | 'failed' | 'waiting' | 'skipped'
@@ -195,6 +205,33 @@ export function reduceEvent(state: StepsState, ev: DurableEvent): StepsState {
         startedAt: now,
         endedAt: now,
         detail: { recalled: items }
+      })
+      break
+    }
+
+    case 'expert.work': {
+      // 专家子代理的工作阶段（手选专家 / 集群成员）。
+      //
+      // id 由「专家 + 阶段」合成：子代理的每个阶段只该有一个步骤，而断线重连会
+      // 把同一事件再送一次 —— 用 seq 之类会每次多出一行的键，重连后时间线就会
+      // 长出重复的「开始处理任务」。stage 为空时退到 seq，保证 id 仍然唯一。
+      const expertId = str(data.expertId) ?? 'expert'
+      const stage = str(data.stage) ?? `seq:${ev.seq}`
+      const name = str(data.expertName) ?? str(ev.message) ?? '专家'
+      // 摘要优先取 detail（后端已写成「调用工具 file_read」这类短句），
+      // 其次才是参数摘要；原始工具参数只进 detail，不进 title。
+      const summary = str(data.detail) ?? str(data.toolArgs)
+      const result = str(data.result)
+      const error = str(data.error)
+      steps = upsert(steps, {
+        id: `expert:${expertId}:${stage}`,
+        kind: 'expert',
+        title: name,
+        subtitle: summary ? (summary.length > 80 ? summary.slice(0, 80) + '…' : summary) : undefined,
+        status: 'done',
+        startedAt: now,
+        endedAt: now,
+        detail: result || error ? { resultPreview: result, error } : undefined
       })
       break
     }

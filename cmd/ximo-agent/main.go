@@ -31,7 +31,7 @@ import (
 // exact failure that made `ximo-agent.exe --version` disagree with the release
 // tag. Keep them exported and keep the ldflags spelling in sync.
 var (
-	Version   = "v2.5.1"
+	Version   = "v2.6.0"
 	gitCommit = "dev"
 	buildTime = "unknown"
 )
@@ -348,6 +348,10 @@ func runEngine(cfg *config.Config, endpoint string) {
 	// 未启用图记忆后端时 app.MemoryGraph() 返回 nil，服务照常注册——每个帧
 	// 返回「本装配没有记忆能力」的明确错误，而不是静默成功。
 	ipcapi.NewMemoryService(app.MemoryGraph()).Register(srv)
+
+	// 专家目录（v2.6.0）：专家库页的读写面（内置 254 位 + 用户自定义专家）。
+	// 与记忆同样：装配缺失时返回 nil，服务照常注册，每个帧给出明确错误。
+	ipcapi.NewExpertService(app.ExpertDirectory()).Register(srv)
 
 	// 3. 启动时先自行恢复一次：即使 Supervisor 没发 resume 帧（例如 Engine 是
 	//    被手动启动的），崩溃前未完成的 run 也应当被继续推进。

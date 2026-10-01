@@ -21,6 +21,9 @@ import type {
   DecideResultPayload,
   DurableEvent,
   EventsPayload,
+  ExpertCardPayload,
+  ExpertDeletePayload,
+  ExpertListPayload,
   HandlePayload,
   MemoryExport,
   MemoryGraph,
@@ -261,6 +264,26 @@ function registerIpcHandlers(): void {
       return (await requireClient().memoryClear(confirm)) as MemoryGraphMutation
     }
   )
+
+  // ---- 专家目录（v2.6.0）--------------------------------------------------
+  //
+  // 专家库页的数据源。此前该页用的是渲染层里的硬编码 60 位样本，用户点不到
+  // 后端目录里的其余专家，也无法创建自定义专家 —— 这一组 handler 把目录变成
+  // 单一真相。同样不做字段翻译：两端共用 internal/types 的形状。
+  ipcMain.handle(IPC.ExpertList, async (): Promise<ExpertListPayload> => {
+    return (await requireClient().expertList()) as ExpertListPayload
+  })
+
+  ipcMain.handle(
+    IPC.ExpertSave,
+    async (_e, card: ExpertCardPayload): Promise<ExpertCardPayload> => {
+      return (await requireClient().expertSave(card)) as ExpertCardPayload
+    }
+  )
+
+  ipcMain.handle(IPC.ExpertDelete, async (_e, expertId: string): Promise<ExpertDeletePayload> => {
+    return (await requireClient().expertDelete(expertId)) as ExpertDeletePayload
+  })
 
   // 无边框窗口的自绘控制。用 on 而非 handle：这些是单向命令，无需回值。
   ipcMain.on(IPC.WindowMinimize, () => {

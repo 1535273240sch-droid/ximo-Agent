@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +18,40 @@ import (
 
 // migrationsDir 指向仓库根 migrations/（本包位于 internal/gateway/store，向上三级）。
 var migrationsDir = filepath.Join("..", "..", "..", "migrations")
+
+// latestMigrationVersion 从迁移目录里算出最高版本号。
+//
+// 迁移文件名形如 0003_gateway.sql；这里只解析前缀数字，无法解析的文件名直接跳过
+// （真正的一致性门禁在 internal/storage/migrations：版本必须从 1 起连续、无缺口）。
+func latestMigrationVersion(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	highest := 0
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".sql" {
+			continue
+		}
+		name := e.Name()
+		idx := strings.IndexByte(name, '_')
+		if idx <= 0 {
+			continue
+		}
+		v, err := strconv.Atoi(name[:idx])
+		if err != nil || v <= 0 {
+			continue
+		}
+		if v > highest {
+			highest = v
+		}
+	}
+	if highest == 0 {
+		t.Fatalf("no migration files found in %s", migrationsDir)
+	}
+	return highest
+}
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -63,8 +100,15 @@ func TestMigrationsApplyGatewaySchema(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM migrations`).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 3 {
-		t.Fatalf("schema version = %d, want 3 (0003_gateway.sql)", version)
+	// 断言「迁移全部应用完」而不是某个写死的数字：迁移目录是所有模块共用的
+	// （0001 基础表、0002 幂等、0003 gateway、0004 专家目录、……），每加一条迁移
+	// 写死的期望值就会失效，而它想表达的东西（当前版本 = 目录里的最高版本）从没变过。
+	//
+	// 期望值直接从 migrations/ 目录算出来，因此新增迁移不需要改这条测试。
+	wantLatest := latestMigrationVersion(t)
+	if version != wantLatest {
+		t.Fatalf("schema version = %d, want %d（迁移必须全部应用完；目录里的最高版本）",
+			version, wantLatest)
 	}
 
 	want := []string{

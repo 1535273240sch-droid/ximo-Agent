@@ -288,25 +288,37 @@ func TestAnalyzeExpertUsesDivisionTools(t *testing.T) {
 }
 
 // TestAnalyzeExpertAddsKeywordTools 确认关键词能叠加额外工具。
+//
+// 断言的是"机制"而不是某个具体工具名：规则表里的工具会随真实能力调整
+// （v2.6.0 把 code_execute 这类未实现的名字换成了 terminal_exec / file_edit），
+// 写死一个名字会让这条测试在每次调整推荐表时假失败。
 func TestAnalyzeExpertAddsKeywordTools(t *testing.T) {
 	base := Expert{
 		ID:          "x",
-		Division:    "academic", // 基础工具集不含 code_execute
+		Division:    "academic", // 学术部门的基础集不含编程类工具
 		Description: "普通描述",
 		Personality: "人格",
 		Vibe:        "风格",
 	}
 	baseTools := AnalyzeExpert(base).Tools
-	if containsStr(baseTools, "code_execute") {
-		t.Skip("测试前提不成立：academic 基础集已含 code_execute")
+
+	// 找出第一条规则里"基础集没有"的工具，用它验证叠加确实发生。
+	var want string
+	for _, tool := range KeywordToolRules[0].Tools {
+		if !containsStr(baseTools, tool) {
+			want = tool
+			break
+		}
+	}
+	if want == "" {
+		t.Skip("测试前提不成立：academic 基础集已覆盖第一条关键词规则的全部工具")
 	}
 
-	// 加入「代码」关键词 → 应叠加编程相关工具。
 	withKeyword := base
 	withKeyword.Description = "擅长编写代码与开发"
 	got := AnalyzeExpert(withKeyword)
-	if !containsStr(got.Tools, "code_execute") {
-		t.Error("关键词「代码」应叠加 code_execute")
+	if !containsStr(got.Tools, want) {
+		t.Errorf("关键词「代码」应叠加 %q，实际工具集：%v", want, got.Tools)
 	}
 }
 

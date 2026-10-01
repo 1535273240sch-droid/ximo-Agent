@@ -22,7 +22,23 @@ func systemMessageOf(t *testing.T, req provider.CompletionRequest) string {
 
 // productionEngineeringTools 是默认配置下工程类专家真正能用的工具
 // （与 internal/bootstrap/expert_tools_test.go 的注册表快照一致的子集）。
-var productionEngineeringTools = []string{"file_read", "file_write", "file_search", "terminal_exec"}
+var productionEngineeringTools = []string{
+	"file_read", "file_write", "file_search", "file_edit", "multi_edit",
+	"terminal_exec", "todo_write",
+}
+
+// neverImplementedTools 是本 build 里**从未实现**的工具名：它们既不能进 function
+// schema，也绝不能出现在系统提示词或工作流文案里。v1 的能力清单里有这些名字，
+// 而 v2 没有 —— 提示词提到它们，模型就会去调用一个必然失败的工具（或在回答里
+// 谎称自己用过了）。v2.6.0 起推荐表已经全部改成真实工具，这条断言负责守住它。
+var neverImplementedTools = []string{
+	"code_execute", "code_lint", "code_format", "git_operations",
+	"web_search", "web_research", "web_cache",
+	"ui_generate", "design_preview", "design_critique", "design_audit",
+	"design_a11y", "design_color",
+	"project_index", "project_context", "dependency_check",
+	"network_capture", "network_replay", "api_extract",
+}
 
 // TestExecutePromptOnlyAdvertisesExecutableTools 是「提示词说了什么，模型就能调什么」
 // 的验收。
@@ -73,13 +89,12 @@ func TestExecutePromptOnlyAdvertisesExecutableTools(t *testing.T) {
 			t.Errorf("系统提示词没有列出可用工具 %s", n)
 		}
 	}
-	// 2. 推荐表里有、但本 build 没实现的工具一个都不能出现。
-	for _, n := range []string{
-		"code_execute", "code_lint", "code_format", "git_operations",
-		"todo_write", "multi_edit", "project_index", "dependency_check",
-	} {
-		if strings.Contains(prompt, "`"+n+"`") {
-			t.Errorf("系统提示词宣传了未注册的工具 %s（模型会去调用它并失败）", n)
+	// 2. 本 build 从未实现的工具名一个都不能出现（提示词与工作流文案都算：
+	// 之前工程类的工作流写着 project_index / code_execute / code_lint / git_operations，
+	// 模型会严格照着这些步骤去调用）。
+	for _, n := range neverImplementedTools {
+		if strings.Contains(prompt, n) {
+			t.Errorf("系统提示词提到了未实现的工具 %s（模型会去调用它并失败，或谎称用过了）", n)
 		}
 	}
 	// 3. 提示词与 function schema 必须同源同集合。
@@ -166,7 +181,7 @@ func TestInfoPathKeepsRecommendationList(t *testing.T) {
 	if out.SubAgentMode {
 		t.Fatal("无 task 不应进入子 Agent 模式")
 	}
-	if !strings.Contains(out.System, "`code_execute`") {
+	if !strings.Contains(out.System, "`file_edit`") {
 		t.Error("信息型返回应展示完整推荐工具表")
 	}
 }

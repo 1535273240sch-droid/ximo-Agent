@@ -514,6 +514,28 @@ export class BackendClient {
     return this.request(FrameType.MemoryClear, { confirm }, 30_000)
   }
 
+  // -------------------------------------------------------------------------
+  // 专家目录（v2.6.0）
+  //
+  // 与记忆同上：载荷形状与 internal/ipcapi/wire.go 的 DTO 一一对应，这一层不翻译。
+  // 内置目录 254 位 + 自定义专家的合并视图由后端给出，界面不再维护硬编码副本。
+  // -------------------------------------------------------------------------
+
+  /** 取完整专家目录（内置 + 自定义）。 */
+  expertList(): Promise<unknown> {
+    return this.request(FrameType.ExpertList, {}, 30_000)
+  }
+
+  /** 新建或覆盖一位自定义专家，返回落库后的记录。 */
+  expertSave(card: unknown): Promise<unknown> {
+    return this.request(FrameType.ExpertSave, card, 30_000)
+  }
+
+  /** 删除一位自定义专家。 */
+  expertDelete(expertId: string): Promise<unknown> {
+    return this.request(FrameType.ExpertDelete, { expert_id: expertId })
+  }
+
   onEvent(handler: (ev: DurableEvent) => void): () => void {
     this.eventHandlers.add(handler)
     return () => this.eventHandlers.delete(handler)

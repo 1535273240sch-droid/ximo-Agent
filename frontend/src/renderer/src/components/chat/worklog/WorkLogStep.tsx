@@ -38,7 +38,9 @@ export function StepDot({ step }: { step: RunStep }): React.JSX.Element {
                 ? '压缩'
                 : step.kind === 'continue'
                   ? '续段'
-                  : '等待'
+                  : step.kind === 'expert'
+                    ? '专家'
+                    : '等待'
 
   return (
     <span

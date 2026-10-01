@@ -17,6 +17,9 @@ import type {
   DecideResultPayload,
   DurableEvent,
   EventsPayload,
+  ExpertCardPayload,
+  ExpertDeletePayload,
+  ExpertListPayload,
   HandlePayload,
   MemoryExport,
   MemoryGraph,
@@ -109,6 +112,16 @@ const bridge: XimoBridge = {
 
   memoryClear: (confirm: string): Promise<MemoryGraphMutation> =>
     ipcRenderer.invoke(IPC.MemoryClear, confirm),
+
+  // ---- 专家目录（v2.6.0）-------------------------------------------------
+  // 与记忆同构：一个频道一个 invoke，载荷原样透传，不做字段名转换。
+  expertList: (): Promise<ExpertListPayload> => ipcRenderer.invoke(IPC.ExpertList),
+
+  expertSave: (card: ExpertCardPayload): Promise<ExpertCardPayload> =>
+    ipcRenderer.invoke(IPC.ExpertSave, card),
+
+  expertDelete: (id: string): Promise<ExpertDeletePayload> =>
+    ipcRenderer.invoke(IPC.ExpertDelete, id),
 
   onEvent: (handler: (ev: DurableEvent) => void): (() => void) => {
     const listener = (_e: unknown, ev: DurableEvent): void => handler(ev)

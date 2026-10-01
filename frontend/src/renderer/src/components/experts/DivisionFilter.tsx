@@ -1,17 +1,30 @@
-// 计数用 SAMPLE_DIVISION_COUNTS（本页列表里的条数），不是 DIVISION_COUNTS
-// （后端全量目录的条数）：筛选条上的数字必须等于点进去能看到的卡片数。
-import { DIVISION_LABELS, DIVISIONS, SAMPLE_DIVISION_COUNTS } from './experts-data'
+// 筛选条完全由后端目录驱动：divisions 与 counts 都是 props。
+//
+// 为什么不再从 experts-data 取部门与计数：v2.5 的筛选条读的是渲染层内联样本的
+// 统计，于是「工程研发 (58)」点开只有 6 张卡。数字与部门都必须来自当前装载的
+// 那份目录，才能保证「筛选条上的数 = 点进去看到的卡片数」。
+import { divisionLabel } from './experts-data'
 
 export const ALL_DIVISIONS = ''
 
 interface DivisionFilterProps {
+  /** 目录里出现的部门（后端给的原序，第一个是目录里专家最多的部门）。 */
+  divisions: string[]
+  /** 每个部门的专家数（由当前目录派生）。 */
+  counts: Record<string, number>
+  /** 目录里的专家总数，用于「全部部门」的计数。 */
+  total: number
   selected: string
   onSelect: (division: string) => void
 }
 
-export function DivisionFilter({ selected, onSelect }: DivisionFilterProps): React.JSX.Element {
-  const totalCount = Object.values(SAMPLE_DIVISION_COUNTS).reduce((sum, n) => sum + n, 0)
-
+export function DivisionFilter({
+  divisions,
+  counts,
+  total,
+  selected,
+  onSelect
+}: DivisionFilterProps): React.JSX.Element {
   return (
     <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[12.5px] select-none">
       <button
@@ -24,13 +37,13 @@ export function DivisionFilter({ selected, onSelect }: DivisionFilterProps): Rea
         }`}
       >
         <span>全部部门</span>
-        <span className="font-mono text-[12px] opacity-80">({totalCount})</span>
+        <span className="font-mono text-[12px] opacity-80">({total})</span>
       </button>
 
-      {DIVISIONS.map((div) => {
+      {divisions.map((div) => {
         const isActive = selected === div
-        const label = DIVISION_LABELS[div] ?? div
-        const count = SAMPLE_DIVISION_COUNTS[div] ?? 0
+        const label = divisionLabel(div)
+        const count = counts[div] ?? 0
 
         return (
           <button

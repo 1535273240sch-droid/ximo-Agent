@@ -213,6 +213,34 @@ type MemoryImportPayload = types.MemoryExport
 // MemoryExportNode 是导出文件里的一个节点（含完整正文）。
 type MemoryExportNode = types.MemoryExportNode
 
+// ---------------------------------------------------------------------------
+// 专家目录（v2.6.0）
+// ---------------------------------------------------------------------------
+//
+// 请求/响应形状的**单一真相**在 internal/types/t02_expert_catalog.go：同一份类型
+// 既是 ExpertDirectoryPort 的参数类型，也是线上 DTO。这里只保留别名，不抄第二份
+// 结构体（两份形状并存时，改一边漏一边不会编译失败，只会让界面永远拿到零值）。
+//
+// 与其它 DTO 同一条规则：字段只能追加；frontend/src/shared/types.ts 的对应接口
+// 是同一契约的另一侧，必须同一个提交里一起改。
+
+// ExpertCardPayload 是专家目录里的单条记录。
+type ExpertCardPayload = types.ExpertCard
+
+// ExpertListPayload 是 TypeExpertList 的响应体。
+type ExpertListPayload = ExpertListResult
+
+// ExpertIDPayload 是「按专家 id 操作」类请求的载荷。
+//
+// 键名是 expert_id（与 SubmitPayload.expert_id 一致）：同一个概念在线上只有一种
+// 拼写，免得界面在提交 run 与删除专家时用两套字段名。
+type ExpertIDPayload struct {
+	ExpertID string `json:"expert_id"`
+}
+
+// ExpertDeletePayload 是 TypeExpertDelete 的响应体。
+type ExpertDeletePayload = ExpertDeleteResult
+
 // MemoryGraphMutationResult 是图写操作（link / node.update / consolidate / import）
 // 的统一响应：报告做了什么，而不是只说「成功」。
 //

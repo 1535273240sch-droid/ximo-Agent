@@ -13,25 +13,46 @@ import (
 	"strings"
 )
 
-// DivisionTools 部门 → 推荐工具映射（与 v1 DIVISION_TOOLS 逐项一致）。
+// DivisionTools 部门 → 推荐工具映射。
+//
+// **只列本 build 真实注册的工具**。这条规则由测试强制
+// （internal/bootstrap/expert_tools_test.go 的 TestExpertRecommendationsExistInRegistry）：
+// 推荐表里出现一个不存在的名字，专家就会拿着假工具空转 —— 模型要么发起一次必然
+// 失败的调用白烧一轮，要么在回答里声称自己用过了。
+//
+// v1 的能力清单里有 20 多个名字在 v2 没有实现，这里按下面的映射改写（意图保留、
+// 名字换成真实存在的能力）：
+//
+//	code_execute / code_lint / code_format → terminal_exec（终端 worker 也能跑脚本）
+//	   注：没有独立的 lint/format 工具，代码规范检查请用终端里的对应命令。
+//	git_operations                        → git_status / git_diff / git_log / git_branch
+//	web_search / web_research / web_cache → web_fetch（已知 URL）+ browser_navigate /
+//	   browser_get_content（需要"检索"时的唯一真实途径：打开搜索页并读取结果）
+//	network_capture / network_replay      → browser_network_monitor
+//	computer_use                          → computer_* 系列（需在 runtime.worker_pools
+//	   里启用 computer-use，否则会被可用性过滤掉）
+//	ui_generate / design_preview / design_critique / design_audit / design_a11y /
+//	   design_color / project_index / project_context / dependency_check
+//	                                      → **无对应实现，直接移除**：v2 没有设计生成、
+//	   项目索引与依赖检查能力，继续"推荐"它们只是谎报能力。
 var DivisionTools = map[string][]string{
-	"engineering":        {"file_read", "file_write", "file_edit", "file_search", "multi_edit", "code_execute", "code_lint", "code_format", "terminal_exec", "git_operations", "project_context", "project_index", "dependency_check", "todo_write"},
-	"design":             {"ui_generate", "design_preview", "design_critique", "design_audit", "design_a11y", "design_color", "file_read", "file_write", "web_search", "todo_write"},
-	"academic":           {"web_search", "web_fetch", "web_research", "web_cache", "file_read", "file_write", "todo_write"},
-	"marketing":          {"web_search", "web_fetch", "web_research", "file_read", "file_write", "browser_navigate", "browser_screenshot", "todo_write"},
-	"finance":            {"web_search", "web_fetch", "file_read", "file_write", "todo_write", "code_execute"},
-	"game-development":   {"file_read", "file_write", "file_edit", "file_search", "code_execute", "code_lint", "terminal_exec", "dependency_check", "todo_write"},
-	"gis":                {"file_read", "file_write", "file_edit", "code_execute", "terminal_exec", "web_search", "todo_write"},
-	"healthcare":         {"web_search", "web_fetch", "web_research", "file_read", "file_write", "todo_write"},
-	"paid-media":         {"web_search", "web_fetch", "web_research", "file_read", "file_write", "browser_navigate", "browser_screenshot", "todo_write"},
-	"product":            {"web_search", "web_fetch", "web_research", "file_read", "file_write", "todo_write", "ui_generate", "design_preview"},
-	"project-management": {"web_search", "web_fetch", "file_read", "file_write", "todo_write", "terminal_exec"},
-	"sales":              {"web_search", "web_fetch", "web_research", "file_read", "file_write", "todo_write"},
-	"security":           {"file_read", "file_edit", "file_search", "code_execute", "terminal_exec", "web_search", "web_fetch", "todo_write"},
-	"spatial-computing":  {"file_read", "file_write", "file_edit", "code_execute", "terminal_exec", "web_search", "todo_write"},
-	"specialized":        {"web_search", "web_fetch", "web_research", "file_read", "file_write", "todo_write"},
-	"support":            {"web_search", "web_fetch", "file_read", "file_write", "todo_write"},
-	"testing":            {"file_read", "file_edit", "file_search", "code_execute", "code_lint", "terminal_exec", "todo_write"},
+	"engineering":        {"file_read", "file_search", "file_list", "file_write", "file_edit", "multi_edit", "terminal_exec", "git_status", "git_diff", "git_log", "todo_write"},
+	"design":             {"file_read", "file_write", "file_edit", "browser_navigate", "browser_screenshot", "todo_write"},
+	"academic":           {"web_fetch", "browser_navigate", "browser_get_content", "file_read", "file_write", "file_search", "todo_write"},
+	"marketing":          {"web_fetch", "browser_navigate", "browser_get_content", "browser_screenshot", "file_read", "file_write", "todo_write"},
+	"finance":            {"web_fetch", "file_read", "file_write", "terminal_exec", "todo_write"},
+	"game-development":   {"file_read", "file_search", "file_write", "file_edit", "multi_edit", "terminal_exec", "todo_write"},
+	"gis":                {"file_read", "file_search", "file_write", "file_edit", "terminal_exec", "web_fetch", "todo_write"},
+	"healthcare":         {"web_fetch", "browser_navigate", "browser_get_content", "file_read", "file_write", "todo_write"},
+	"paid-media":         {"web_fetch", "browser_navigate", "browser_get_content", "browser_screenshot", "file_read", "file_write", "todo_write"},
+	"product":            {"web_fetch", "browser_navigate", "browser_get_content", "file_read", "file_write", "todo_write"},
+	"project-management": {"todo_write", "web_fetch", "file_read", "file_write", "terminal_exec"},
+	"sales":              {"web_fetch", "browser_navigate", "browser_get_content", "file_read", "file_write", "todo_write"},
+	"security":           {"file_read", "file_search", "file_edit", "terminal_exec", "git_diff", "web_fetch", "todo_write"},
+	"spatial-computing":  {"file_read", "file_search", "file_write", "file_edit", "terminal_exec", "web_fetch", "todo_write"},
+	"specialized":        {"web_fetch", "browser_navigate", "browser_get_content", "file_read", "file_write", "todo_write"},
+	"support":            {"web_fetch", "file_read", "file_write", "todo_write"},
+	"testing":            {"file_read", "file_search", "file_edit", "multi_edit", "terminal_exec", "git_diff", "todo_write"},
 }
 
 // KeywordToolRule 关键词 → 额外工具补充规则。
@@ -40,184 +61,168 @@ type KeywordToolRule struct {
 	Tools    []string
 }
 
-// KeywordToolRules 与 v1 KEYWORD_TOOL_RULES 逐项一致。
+// KeywordToolRules 与 v1 KEYWORD_TOOL_RULES 的关键词一致，工具名按 v2 真实能力改写。
 var KeywordToolRules = []KeywordToolRule{
-	{[]string{"代码", "编程", "开发", "code", "programming", "develop", "前端", "后端", "frontend", "backend"}, []string{"file_read", "file_edit", "code_execute", "terminal_exec", "code_lint", "code_format"}},
-	{[]string{"设计", "UI", "界面", "design", "interface", "视觉", "visual"}, []string{"ui_generate", "design_preview", "design_critique", "design_audit"}},
-	{[]string{"搜索", "研究", "search", "research", "调研", "分析"}, []string{"web_search", "web_fetch", "web_research"}},
-	{[]string{"浏览器", "网页", "browser", "web", "爬虫", "crawl"}, []string{"browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_get_content"}},
-	{[]string{"桌面", "操控", "电脑", "desktop", "computer", "自动化", "automate"}, []string{"computer_use"}},
-	{[]string{"网络", "抓包", "network", "capture", "API", "接口"}, []string{"network_capture", "network_replay", "api_extract"}},
-	{[]string{"Git", "版本", "commit", "branch"}, []string{"git_operations"}},
-	{[]string{"数据库", "database", "SQL", "DB"}, []string{"terminal_exec", "code_execute"}},
-	{[]string{"无障碍", "accessibility", "a11y", "WCAG"}, []string{"design_a11y", "design_audit"}},
-	{[]string{"颜色", "color", "配色", "色彩"}, []string{"design_color"}},
-	{[]string{"安全", "security", "漏洞", "vulnerability", "penetration"}, []string{"code_lint", "terminal_exec"}},
-	{[]string{"性能", "performance", "优化", "optimize"}, []string{"code_execute", "terminal_exec"}},
+	{[]string{"代码", "编程", "开发", "code", "programming", "develop", "前端", "后端", "frontend", "backend"}, []string{"file_read", "file_edit", "multi_edit", "file_search", "terminal_exec"}},
+	{[]string{"设计", "UI", "界面", "design", "interface", "视觉", "visual"}, []string{"file_read", "file_write", "browser_navigate", "browser_screenshot"}},
+	{[]string{"搜索", "研究", "search", "research", "调研", "分析"}, []string{"web_fetch", "browser_navigate", "browser_get_content"}},
+	{[]string{"浏览器", "网页", "browser", "web", "爬虫", "crawl"}, []string{"browser_navigate", "browser_get_content", "browser_click", "browser_screenshot", "browser_execute_js"}},
+	{[]string{"桌面", "操控", "电脑", "desktop", "computer", "自动化", "automate"}, []string{"computer_observe", "computer_screenshot", "computer_click_element", "computer_set_text"}},
+	{[]string{"网络", "抓包", "network", "capture", "API", "接口"}, []string{"browser_network_monitor", "terminal_exec", "file_write"}},
+	{[]string{"Git", "版本", "commit", "branch"}, []string{"git_status", "git_diff", "git_log", "git_branch"}},
+	{[]string{"数据库", "database", "SQL", "DB"}, []string{"terminal_exec", "file_read"}},
+	{[]string{"无障碍", "accessibility", "a11y", "WCAG"}, []string{"browser_navigate", "browser_get_content", "file_read"}},
+	{[]string{"颜色", "color", "配色", "色彩"}, []string{"file_read", "file_write"}},
+	{[]string{"安全", "security", "漏洞", "vulnerability", "penetration"}, []string{"file_search", "file_read", "terminal_exec", "git_diff"}},
+	{[]string{"性能", "performance", "优化", "optimize"}, []string{"terminal_exec", "file_read", "file_write"}},
 }
 
-// DivisionWorkflows 部门 → 预设工作流（与 v1 DIVISION_WORKFLOWS 逐项一致）。
+// DivisionWorkflows 部门 → 预设工作流。
+//
+// 与 DivisionTools 同一条规则：**步骤里提到的每个工具都必须真实存在**。工作流是
+// 直接写进专家系统提示词的操作指南，出现一个不存在的工具名，模型就会照着去调用
+// 它 —— 这比工具清单里的假名字危害更大，因为它是"第一步做什么"的明确指令。
 var DivisionWorkflows = map[string]string{
 	"engineering": `预设工作流（工程类）：
 1. 理解需求 → 明确技术栈、目标和约束
-2. project_index 扫描项目符号索引，了解代码全貌
-3. file_search 搜索相关代码定位关键文件
-4. file_read 精准读取相关代码段（大文件用 startLine/endLine）
-5. file_edit / multi_edit 修改代码
-6. code_execute 或 terminal_exec 编译/运行验证
-7. code_lint 检查代码规范
-8. code_format 格式化
-9. git_operations 提交变更`,
+2. file_list / file_search 摸清代码结构，定位关键文件
+3. file_read 精准读取相关代码段（大文件用它的行范围参数分段读）
+4. file_edit / multi_edit 做最小改动的精确修改（多处改动合并成一次 multi_edit）
+5. terminal_exec 编译 / 运行 / 测试，用真实输出验证改动
+6. git_diff 复核改动范围，git_status 看工作区状态
+7. file_write 输出结论、风险与后续建议`,
 
 	"design": `预设工作流（设计类）：
 1. 理解设计需求和目标用户
-2. ui_generate 生成多个设计方向的 React 组件
-3. design_preview 实时预览效果
-4. design_critique UX 质量审查（层级/信息架构/认知负荷）
-5. design_audit 可量化审计（语义化/响应式/暗色模式/对比度）
-6. design_a11y 无障碍专项检查
-7. design_color 颜色系统分析和优化
-8. 迭代改进直到达标`,
+2. file_read 读取现有界面代码与样式
+3. browser_navigate 打开页面 + browser_screenshot 截图，先看真实渲染效果
+4. 从层级、信息架构、认知负荷、对比度与无障碍角度逐条分析
+5. file_edit / file_write 落地改动（小改动用 file_edit，重构成段用 file_write）
+6. 再截图复核一次，确认改动真的生效
+7. 输出设计说明与待确认项`,
 
 	"academic": `预设工作流（学术研究类）：
 1. 明确研究问题和范围
-2. web_search 搜索文献和资料
-3. web_research 进行深度研究分析
-4. web_fetch 抓取关键文献详细内容
-5. web_cache 回查已访问的页面
-6. 分析、综合、归纳
-7. file_write 撰写研究报告`,
+2. 已有明确来源时用 web_fetch 抓取原文；需要检索时用 browser_navigate 打开搜索页 +
+   browser_get_content 读取结果（v2 没有独立的搜索 API 工具，浏览器是唯一检索途径）
+3. file_write 记录来源与关键结论，便于后续引用
+4. 分析、综合、归纳，明确区分"资料中的观点"与"你的推断"
+5. file_write 撰写研究报告`,
 
 	"marketing": `预设工作流（营销类）：
 1. 理解营销目标和受众
-2. web_search 搜索市场趋势和竞品
-3. web_research 深度研究分析
-4. web_fetch 抓取关键数据
-5. browser_navigate + browser_screenshot 查看竞品页面
-6. 分析并制定策略
-7. file_write 输出营销方案`,
+2. browser_navigate + browser_get_content 查看竞品与市场信息
+3. web_fetch 抓取已知 URL 的详细数据
+4. browser_screenshot 留证，便于对照
+5. 分析并制定策略
+6. file_write 输出营销方案`,
 
 	"finance": `预设工作流（财务类）：
 1. 理解财务分析目标
-2. web_search 搜索市场数据和财经信息
-3. web_fetch 抓取具体数据
-4. code_execute 进行数据计算和分析
+2. web_fetch 抓取已知来源的市场与财经数据
+3. terminal_exec 运行计算脚本（把口径与公式写清楚，让结果可复算）
+4. 交叉验证关键数字，注明假设
 5. file_write 撰写财务报告`,
 
 	"game-development": `预设工作流（游戏开发类）：
 1. 理解游戏设计文档和需求
-2. file_search 搜索现有代码结构
-3. file_read 读取相关代码
-4. file_edit / multi_edit 修改游戏逻辑
-5. code_execute 运行测试
-6. terminal_exec 构建和调试
-7. dependency_check 管理依赖
-8. code_format 格式化`,
+2. file_search 搜索现有代码结构，file_read 读取相关实现
+3. file_edit / multi_edit 修改游戏逻辑
+4. terminal_exec 构建、运行测试、复现问题
+5. git_diff 复核改动
+6. file_write 输出改动说明与调参建议`,
 
 	"gis": `预设工作流（GIS 类）：
 1. 理解空间分析需求
-2. file_search 搜索相关代码
-3. file_read 读取数据源和配置
-4. code_execute 运行空间分析脚本
-5. terminal_exec 执行 GIS 工具命令
-6. web_search 查询参考数据
-7. file_write 输出分析结果`,
+2. file_search 搜索相关代码，file_read 读取数据源与配置
+3. terminal_exec 运行空间分析脚本
+4. web_fetch 查询参考数据（坐标系、标准、口径）
+5. file_write 输出分析结果与地图/图层说明`,
 
 	"healthcare": `预设工作流（医疗健康类）：
 1. 理解医疗领域需求
-2. web_search 搜索医学文献和指南
-3. web_research 深度研究
-4. web_fetch 获取详细资料
-5. 分析综合
-6. file_write 输出报告`,
+2. web_fetch 抓取指南、文献等已知来源
+3. 需要检索时用 browser_navigate + browser_get_content 读取结果
+4. 分析综合，明确标注证据强度与不确定性
+5. file_write 输出报告`,
 
 	"paid-media": `预设工作流（付费媒体类）：
 1. 理解广告投放目标
-2. web_search 搜索行业数据和基准
-3. web_research 深度分析
-4. browser_navigate + browser_screenshot 查看广告平台
+2. browser_navigate + browser_get_content 查看投放平台与行业基准
+3. web_fetch 抓取已知来源的数据
+4. browser_screenshot 留证
 5. 分析并制定投放策略
 6. file_write 输出方案`,
 
 	"product": `预设工作流（产品类）：
 1. 理解产品目标和用户需求
-2. web_search 搜索市场和竞品
-3. web_research 深度研究
-4. ui_generate 生成产品原型
-5. design_preview 预览效果
-6. 分析并制定产品策略
-7. file_write 输出产品文档`,
+2. todo_write 拆解需要产出的文档与决策项
+3. browser_navigate + browser_get_content 查看竞品
+4. web_fetch 抓取已知来源的资料
+5. 分析并制定产品策略
+6. file_write 输出产品文档`,
 
 	"project-management": `预设工作流（项目管理类）：
 1. 理解项目目标和范围
-2. todo_write 创建任务分解结构
-3. web_search 搜索最佳实践
-4. file_read 读取项目文档
-5. terminal_exec 执行项目管理命令
-6. file_write 输出项目计划`,
+2. todo_write 创建任务分解结构（这是本部门最核心的工具）
+3. file_read 读取现有项目文档
+4. terminal_exec 执行必要的检查命令
+5. file_write 输出项目计划与风险清单`,
 
 	"sales": `预设工作流（销售类）：
 1. 理解销售目标
-2. web_search 搜索潜在客户和行业信息
-3. web_research 深度研究
-4. web_fetch 获取客户资料
-5. 分析并制定销售策略
-6. file_write 输出销售方案`,
+2. browser_navigate + browser_get_content 查看客户与行业公开信息
+3. web_fetch 抓取已知来源的资料
+4. 分析并制定销售策略
+5. file_write 输出销售方案`,
 
 	"security": `预设工作流（安全类）：
 1. 理解安全评估目标
-2. file_search 搜索代码中的安全相关模式
-3. file_read 读取关键代码段
-4. code_lint 静态安全分析
-5. terminal_exec 运行安全扫描工具
-6. web_search 查询漏洞信息和修复方案
-7. file_edit 修复安全问题
-8. file_write 输出安全报告`,
+2. file_search 搜索代码中的安全相关模式，file_read 读取关键代码段
+3. terminal_exec 运行可用的扫描/检查命令（v2 没有独立的安全扫描工具）
+4. web_fetch 查询漏洞信息与修复方案
+5. file_edit 修复问题，git_diff 复核改动范围
+6. file_write 输出安全报告（含影响面与复现步骤）`,
 
 	"spatial-computing": `预设工作流（空间计算类）：
 1. 理解空间计算需求
-2. file_search 搜索相关代码
-3. file_read 读取现有实现
-4. code_execute 运行计算脚本
-5. terminal_exec 构建和测试
-6. file_write 输出结果`,
+2. file_search 搜索相关代码，file_read 读取现有实现
+3. terminal_exec 构建与测试
+4. web_fetch 查询平台文档
+5. file_write 输出结果`,
 
 	"specialized": `预设工作流（专业领域类）：
 1. 理解专业需求
-2. web_search 搜索领域资料
-3. web_research 深度研究分析
-4. web_fetch 获取详细内容
-5. 分析综合
-6. file_write 输出报告`,
+2. web_fetch 抓取已知来源的资料
+3. 需要检索时用 browser_navigate + browser_get_content
+4. 分析综合
+5. file_write 输出报告`,
 
 	"support": `预设工作流（支持类）：
 1. 理解客户问题
-2. web_search 搜索解决方案
-3. web_fetch 获取详细文档
-4. file_read 查看相关文档
-5. 分析并给出解决方案
-6. file_write 输出回复`,
+2. web_fetch 抓取已知文档
+3. file_read 查看本地文档与排障记录
+4. 分析并给出可执行的处理步骤
+5. file_write 输出回复`,
 
 	"testing": `预设工作流（测试类）：
-1. 理解测试需求
-2. file_search 搜索测试相关代码
-3. file_read 读取测试文件和被测代码
-4. file_edit 编写/修改测试用例
-5. code_execute 运行测试
-6. code_lint 检查测试代码质量
-7. terminal_exec 执行测试命令
-8. file_write 输出测试报告`,
+1. 理解测试需求与验收标准
+2. file_search 搜索测试代码，file_read 读取被测实现与现有用例
+3. file_edit / multi_edit 编写或修改用例
+4. terminal_exec 运行测试并贴出真实结果
+5. git_diff 复核改动范围
+6. file_write 输出测试报告（通过/失败/未覆盖）`,
 }
 
 // DefaultTools 无法匹配部门时的默认工具集。
-var DefaultTools = []string{"web_search", "web_fetch", "file_read", "file_write", "todo_write"}
+var DefaultTools = []string{"web_fetch", "file_read", "file_search", "file_write", "file_edit", "todo_write"}
 
 // DefaultWorkflow 默认工作流。
 const DefaultWorkflow = `预设工作流：
 1. 理解任务目标和约束
-2. web_search 搜索相关信息
-3. web_fetch 获取详细内容
-4. 分析综合
+2. todo_write 拆解可验证的步骤
+3. file_read / file_search 读取相关材料；需要外部信息时用 web_fetch
+4. 分析综合，必要时用 terminal_exec 验证
 5. file_write 输出结果`
 
 // 子 Agent 约束（与 v1 常量一致）。

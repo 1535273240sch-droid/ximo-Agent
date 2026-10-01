@@ -116,6 +116,55 @@ describe('steps reducer', () => {
     expect(after.steps[0]?.status).toBe('done')
   })
 
+  it('expert.work 生成 expert 步骤：标题是专家名，结果是可展开预览', () => {
+    const s = reduce(
+      ev('expert.work', {
+        expertId: 'engineering-frontend-developer',
+        expertName: '前端开发工程师',
+        stage: 'tool',
+        detail: '调用工具 file_read',
+        toolArgs: 'path: src/main.ts',
+        result: 'export const x = 1',
+        timestamp: 1_700_000_000_000
+      })
+    )
+
+    expect(s.steps).toHaveLength(1)
+    const step = s.steps[0]
+    expect(step?.kind).toBe('expert')
+    expect(step?.id).toBe('expert:engineering-frontend-developer:tool')
+    expect(step?.title).toBe('前端开发工程师')
+    expect(step?.subtitle).toBe('调用工具 file_read')
+    expect(step?.status).toBe('done')
+    expect(step?.detail?.resultPreview).toBe('export const x = 1')
+    // 原始工具参数只进 detail，不进标题。
+    expect(step?.title).not.toContain('src/main.ts')
+  })
+
+  it('同一位专家同一阶段的重复投递不会多出一步（重连幂等）', () => {
+    const payload = {
+      expertId: 'engineering-frontend-developer',
+      expertName: '前端开发工程师',
+      stage: 'started',
+      detail: '专家开始处理任务：审查代码'
+    }
+    const once = reduce(ev('expert.work', payload))
+    const twice = reduceEvents(once, [ev('expert.work', payload)])
+    expect(twice.steps).toHaveLength(1)
+    expect(twice.steps[0]?.id).toBe('expert:engineering-frontend-developer:started')
+  })
+
+  it('expert 步骤在 run.completed 后收尾，不残留进行中的行', () => {
+    const s = reduce(
+      ev('expert.work', { expertId: 'e1', expertName: '专家一', stage: 'started' }),
+      ev('expert.work', { expertId: 'e1', expertName: '专家一', stage: 'finished' }),
+      ev('run.completed', undefined, { state: 'completed' })
+    )
+    expect(s.steps.map((x) => x.kind)).toEqual(['expert', 'expert'])
+    expect(s.steps.every((x) => x.status === 'done')).toBe(true)
+    expect(isPending(s.steps)).toBe(false)
+  })
+
   it('run.closure 写入闭环报告，终态把未结束的步骤收尾', () => {
     const s = reduce(
       ev('round.started', undefined, { round: 0 }),

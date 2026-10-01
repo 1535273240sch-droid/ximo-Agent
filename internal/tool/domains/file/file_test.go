@@ -215,6 +215,8 @@ func TestFileToolDefinitions(t *testing.T) {
 		"file_list":   {tool.RiskLow, tool.ClassIdempotent, tool.DomainInProcess},
 		"file_search": {tool.RiskLow, tool.ClassIdempotent, tool.DomainInProcess},
 		"file_write":  {tool.RiskMedium, tool.ClassDetectable, tool.DomainInProcess},
+		"file_edit":   {tool.RiskMedium, tool.ClassDetectable, tool.DomainInProcess},
+		"multi_edit":  {tool.RiskMedium, tool.ClassDetectable, tool.DomainInProcess},
 		"file_delete": {tool.RiskHigh, tool.ClassNonIdempotent, tool.DomainInProcess},
 	}
 	for _, tl := range tools {

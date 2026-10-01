@@ -26,6 +26,7 @@ import (
 	gitdomain "github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/git"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/knowledge"
 	memorytool "github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/memory"
+	tododomain "github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/todo"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/tool/domains/web"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/types"
 	"github.com/ximo888ok-netizen/ximo-agent/internal/worker"
@@ -69,6 +70,13 @@ type App struct {
 
 	// subAgentPool 缓存任务 05 的子代理模型池（懒构造，配置变更后失效重建）。
 	subAgentPool subAgentPoolState
+
+	// expertRegistry 是专家目录（内置 254 位 + 用户自定义）。
+	//
+	// 必须是 App 上的字段而不是每次现构造：它承载自定义专家的缓存索引，
+	// 而 IPC 的专家帧（列表/保存/删除）与引擎的专家执行路径必须看到**同一份**
+	// 目录 —— 否则用户刚保存的专家在提交 run 时又"不存在"。
+	expertRegistry *expert.Registry
 }
 
 // Options 覆盖装配时的外部注入点，主要供测试使用。
@@ -191,6 +199,16 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 	// Engine 拿到的是一个稳定的可替换壳，这样用户改密钥/模型后无需重启。
 	holder := &swappableProvider{cur: prov}
 	app.providerHolder = holder
+
+	// 专家目录：内置 254 位来自 embed，自定义专家来自 experts 表（0004 迁移起带
+	// 部门/emoji/风格/人格/配色列）。装配在 Engine 之前，因为 Engine 的 deps.Experts
+	// 与 IPC 的专家帧用的是同一个注册表实例。
+	//
+	// 此前这里什么都没有：deps.Experts 从未被赋值，Engine 内部退化成
+	// NewRegistry(nil)，于是"自定义专家"只有接口签名没有实现。
+	repos := expertRepos(store)
+	app.expertRegistry = buildExpertRegistry(repos)
+
 	deps := engine.Dependencies{
 		Events:      newEventStoreAdapter(db, store),
 		Outbox:      newOutboxAdapter(db, store),
@@ -199,6 +217,7 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 		Tools:       tools,
 		Provider:    holder,
 		Context:     newContextAdapter(ctxmgr.NewContextManager(ctxmgr.ContextManagerOptions{})),
+		Experts:     app.expertRegistry,
 		// 长期记忆：nil（未启用）时引擎的召回与回填都退化成 no-op，
 		// 行为与本特性不存在时完全一致。
 		Memory: memoryAdapter{svc: app.memorySvc},
@@ -218,6 +237,10 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 			}
 			return app.cfg.SubAgentCandidates(expertID, division)
 		},
+		// 崩溃恢复时的原始 prompt/model 回填（审核文档 V1）：这两列在 runs 表里，
+		// 事件日志里没有。缺失时 RunRequestCatalog 返回 ok=false，恢复流程退回旧的
+		// 占位 prompt 行为。
+		RunRequestCatalog: runRequestCatalog{runs: runsOf(repos)},
 	}
 	if cfg.Runtime.MaxRecoveryAttempts > 0 {
 		engineCfg.MaxRecoveryAttempts = cfg.Runtime.MaxRecoveryAttempts
@@ -455,6 +478,12 @@ func buildToolRuntime(cfg *config.Config, opts Options, app *App, db *sqlite.DB)
 	}
 	if err := registry.Register(memorytool.New(memoryBackend)); err != nil {
 		return nil, nil, fmt.Errorf("register memory tool: %w", err)
+	}
+	// 待办工具：F1 闭环（「待办全部完成 → 收尾」）与 closure 的 todos_done 检查都以
+	// 它为前提。此前它只出现在部门推荐表、权限表与幂等分类表里，却没有注册 ——
+	// 于是那两条闭环在生产里永不触发（TodoSeen 恒为 false），模型也看不到这个工具。
+	if err := registry.Register(tododomain.New()); err != nil {
+		return nil, nil, fmt.Errorf("register todo tool: %w", err)
 	}
 
 	// Worker 池工具（browser / terminal / office / dynamic-js / mcp / computer-use）。

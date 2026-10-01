@@ -152,6 +152,10 @@ export type EventType =
   | 'run.closure'
   // 长期记忆召回（记忆重设计）：本次 run 点亮了哪些记忆、经由什么路径。
   | 'memory.recalled'
+  // 专家子代理的工作阶段（手选专家 / Agent 集群）：主循环的 round/tool 事件说的是
+  // 主 Agent 自己，子代理的 StageStarted/StageMessage/StageTool/StageFinished 走这条。
+  // 载荷：{ expertId, expertName, stage, detail?, toolArgs?, result?, timestamp }。
+  | 'expert.work'
   // 允许后端先于前端新增事件类型而不破坏编译。
   | (string & {})
 
@@ -333,6 +337,20 @@ export interface XimoBridge {
    * 传其它值后端会明确拒绝，前端这里也做一次同样的校验（早失败早提示）。
    */
   memoryClear(confirm: string): Promise<MemoryGraphMutation>
+
+  // --- 专家目录（v2.6.0）---------------------------------------------------
+  //
+  // 帧名与 internal/ipc/protocol.go 的 TypeExpert* 一一对应；载荷类型是
+  // internal/types/t02_expert_catalog.go 里那组 DTO 的逐字复刻。专家库页此前用
+  // 渲染层里的硬编码样本（60 位，而后端目录有 254 位），这一组接口把它换成
+  // 后端的合并目录（内置 + 用户自定义）。
+
+  /** 取完整专家目录（内置 + 自定义）。 */
+  expertList(): Promise<ExpertListPayload>
+  /** 新建或覆盖一位自定义专家；返回落库后的记录。 */
+  expertSave(card: ExpertCardPayload): Promise<ExpertCardPayload>
+  /** 删除一位自定义专家；内置专家删不掉（后端会明确报错）。 */
+  expertDelete(id: string): Promise<ExpertDeletePayload>
 
   /** 订阅事件推送；返回取消订阅函数。 */
   onEvent(handler: (ev: DurableEvent) => void): () => void
@@ -682,6 +700,47 @@ export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {
   autoExtract: true,
   autoConsolidate: true,
   embeddingModel: ''
+}
+
+// ---------------------------------------------------------------------------
+// 专家目录（v2.6.0）
+//
+// 逐字对应 internal/types/t02_expert_catalog.go 的 ExpertCard / ExpertListResult /
+// ExpertDeleteResult。字段只能追加：这是前后端共用的一份契约，改名字不会报错，
+// 只会让界面永远显示空值。
+// ---------------------------------------------------------------------------
+
+/** 目录里一位专家，对应 Go 的 types.ExpertCard。 */
+export interface ExpertCardPayload {
+  id: string
+  division: string
+  name: string
+  description: string
+  /** 卡片头像字符。 */
+  emoji?: string
+  /** 执业风格的一句话描述。 */
+  vibe?: string
+  /** 人格提示词（自定义专家一般会填）。 */
+  personality?: string
+  /** 卡片配色（#RRGGBB 或颜色名）。 */
+  color?: string
+  /** 推荐工具名；真正下发给子 Agent 时会按本 build 的工具注册表过滤。 */
+  tools?: string[]
+  /** true 表示这条来自用户（可编辑/可删除），false 表示内置目录。 */
+  custom?: boolean
+}
+
+/** 专家目录列表响应。 */
+export interface ExpertListPayload {
+  experts: ExpertCardPayload[]
+  total: number
+  /** 目录里出现的部门（去重、有序），界面据此渲染筛选条。 */
+  divisions: string[]
+}
+
+/** 删除结果：deleted 为 false 表示不存在或属于内置专家。 */
+export interface ExpertDeletePayload {
+  deleted: boolean
 }
 
 declare global {

@@ -3,6 +3,7 @@ package office
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,13 +63,48 @@ func TestResolvePathOutsideRootsRejected(t *testing.T) {
 	outside := t.TempDir()
 	w := NewWorker("office-0", Config{AllowedRoots: []string{root}})
 
+	// 必须是**策略拒绝**，而不是碰巧因为"路径解析失败"报错：错误类型错了说明
+	// 边界是被绕过后又撞上别的分支，语义上不能算拒绝。
 	if _, err := w.resolvePath(filepath.Join(outside, "x.docx")); err == nil {
 		t.Error("白名单外路径应被拒绝")
+	} else if !errors.Is(err, worker.ErrPolicyDenied) {
+		t.Errorf("白名单外路径应以 ErrPolicyDenied 拒绝，实际: %v", err)
 	}
-	// 白名单内应通过。
+	// 白名单内应通过（目标文件允许尚不存在，create 场景必须照常通过）。
 	inside := filepath.Join(root, "x.docx")
 	if _, err := w.resolvePath(inside); err != nil {
 		t.Errorf("白名单内路径应通过: %v", err)
+	}
+}
+
+// TestResolvePathDotDotEscapeRejected 验证 ".." 逃逸被拒绝。
+// 这里刻意用字符串拼接（而不是 filepath.Join）把 ".." 原样交给 resolvePath，
+// 确保规范化发生在包含性判断之前，且是 Clean 语义而不是字符串前缀比较。
+func TestResolvePathDotDotEscapeRejected(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewWorker("office-0", Config{AllowedRoots: []string{root}})
+	sep := string(filepath.Separator)
+
+	// 越权目标已存在：借 ".." 出去必须被拒。
+	if _, err := w.resolvePath(root + sep + ".." + sep + "evil" + sep + "x.docx"); err == nil {
+		t.Error("带 .. 的越权路径必须被拒绝")
+	}
+	// 越权目标不存在（create 场景）同样不能借 ".." 逃出白名单。
+	if _, err := w.resolvePath(root + sep + ".." + sep + "evil" + sep + "new.docx"); err == nil {
+		t.Error("带 .. 的不存在路径必须被拒绝")
+	}
+	// 反向确认 root 自身仍可用（避免把 ".." 处理成"一律拒绝"）。
+	if _, err := w.resolvePath(root + sep + "ok.docx"); err != nil {
+		t.Errorf("白名单根内的普通路径应通过: %v", err)
 	}
 }
 
@@ -84,6 +120,105 @@ func TestResolvePathPrefixTrickRejected(t *testing.T) {
 	w := NewWorker("office-0", Config{AllowedRoots: []string{root}})
 	if _, err := w.resolvePath(filepath.Join(sibling, "x.docx")); err == nil {
 		t.Error("前缀相同的兄弟目录不应被放行")
+	}
+	// 兄弟目录里尚不存在的文件同样不能因为前缀相同而放行。
+	if _, err := w.resolvePath(filepath.Join(sibling, "new.docx")); err == nil {
+		t.Error("前缀相同的兄弟目录（目标不存在）不应被放行")
+	}
+}
+
+// TestResolvePathSymlinkEscapeRejected 验证 symlink 逃逸被拒绝：
+// 白名单内的链接指向白名单外时，必须按链接的真实目标判定，而不是按链接自身的字面路径。
+func TestResolvePathSymlinkEscapeRejected(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("当前环境无法创建符号链接，跳过: %v", err)
+	}
+
+	w := NewWorker("office-0", Config{AllowedRoots: []string{root}})
+	// 链接指向的白名单外文件已存在。
+	if err := os.WriteFile(filepath.Join(outside, "x.docx"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.resolvePath(filepath.Join(link, "x.docx")); err == nil {
+		t.Error("通过 symlink 指向白名单外的已存在路径必须被拒绝")
+	}
+	// 链接指向的白名单外文件尚不存在（create 场景）也不能跟着链接写出去。
+	if _, err := w.resolvePath(filepath.Join(link, "new.docx")); err == nil {
+		t.Error("通过 symlink 指向白名单外的新建路径必须被拒绝")
+	}
+
+	// 悬空 symlink：目标不存在，真实位置不可知，必须 fail-closed。
+	dangling := filepath.Join(root, "dangling")
+	if err := os.Symlink(filepath.Join(base, "not-created"), dangling); err != nil {
+		t.Skipf("当前环境无法创建符号链接，跳过: %v", err)
+	}
+	if _, err := w.resolvePath(filepath.Join(dangling, "new.docx")); err == nil {
+		t.Error("悬空 symlink 下的路径必须被拒绝（目标不可知，fail-closed）")
+	}
+}
+
+// TestResolvePathAcceptsEquivalentRootSpelling 验证"同一目录的两种等价写法"都算在白名单内。
+//
+// 这是本机 t.TempDir() 触发的假性拒绝的跨平台复现：当目标文件**尚不存在**时，
+// EvalSymlinks 会直接报错，旧实现于是拿"未规范化的路径"去比对"已规范化的 root"，
+// 同一目录的等价写法被判成了越权。Windows 上的 8.3 短名（%TEMP% 常是短名）就是
+// 这种等价写法之一，见 worker_windows_test.go。
+func TestResolvePathAcceptsEquivalentRootSpelling(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("当前环境无法创建符号链接，跳过: %v", err)
+	}
+
+	// 白名单写真实目录，调用方用别名给出"尚未创建"的文件。
+	w := NewWorker("office-0", Config{AllowedRoots: []string{real}})
+	got, err := w.resolvePath(filepath.Join(alias, "new.docx"))
+	if err != nil {
+		t.Errorf("等价写法（symlink 别名）下的新文件应通过: %v", err)
+	} else {
+		// 返回值必须是规范化后的真实路径：透传别名给 officecli 会让"校验的路径"和
+		// "真正被写入的路径"再次出现两套写法。期望值也必须先 EvalSymlinks，
+		// 否则测试自己就会掉进"短名 vs 长名"的坑（本机 %TEMP% 正是短名）。
+		canonicalReal, err := filepath.EvalSymlinks(real)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(canonicalReal, "new.docx"); !strings.EqualFold(got, want) {
+			t.Errorf("应返回规范化后的真实路径: got=%s want=%s", got, want)
+		}
+	}
+	// 多级尚不存在的子目录同样要按"已存在前缀"规范化。
+	if _, err := w.resolvePath(filepath.Join(alias, "a", "b", "new.docx")); err != nil {
+		t.Errorf("别名下多级新目录中的文件应通过: %v", err)
+	}
+
+	// 反向：白名单写别名，调用方写真实目录。
+	w2 := NewWorker("office-0", Config{AllowedRoots: []string{alias}})
+	if _, err := w2.resolvePath(filepath.Join(real, "new.docx")); err != nil {
+		t.Errorf("真实路径在别名白名单下应通过: %v", err)
+	}
+}
+
+// TestResolvePathEmptyRootDoesNotWidenPolicy 验证 allowed_roots 里的空串不会把 cwd
+// 变成合法根（filepath.Abs("") 会返回当前工作目录，等于凭空放宽白名单）。
+func TestResolvePathEmptyRootDoesNotWidenPolicy(t *testing.T) {
+	w := NewWorker("office-0", Config{AllowedRoots: []string{"  "}})
+	if _, err := w.resolvePath("x.docx"); err == nil {
+		t.Error("空 root 不应让相对路径（cwd）通过白名单")
 	}
 }
 

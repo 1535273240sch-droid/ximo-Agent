@@ -1,6 +1,6 @@
 {
   "name": "ximo-agent",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "description": "XimoAgent v2 - 全能 Agent 工作台（Go 引擎 + Electron 前端，第三方 OpenAI 兼容接口）",
   "author": "ximo",
   "main": "out/main/index.js",

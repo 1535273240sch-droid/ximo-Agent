@@ -318,7 +318,11 @@ func scanMcpServer(rows *sql.Rows) (*McpServer, error) {
 
 // ---------------------------------------------------------------- experts
 
-// Expert 对应 experts 表（v1 experts.json 对等结构）。
+// Expert 对应 experts 表（v1 experts.json 对等结构 + v2 的部门/风格/人格列）。
+//
+// division/emoji/vibe/color/personality 是 0004 迁移追加的列：v2 的专家定义比 v1
+// 多了这几项，而自定义专家要能被 expert.Registry 合并进内置目录，就必须把同一组
+// 字段持久化下来（否则用户建的专家会缺部门、缺 emoji、缺人格提示词）。
 type Expert struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -328,6 +332,11 @@ type Expert struct {
 	Tools       []string `json:"tools,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Source      string   `json:"source"`
+	Division    string   `json:"division,omitempty"`
+	Emoji       string   `json:"emoji,omitempty"`
+	Vibe        string   `json:"vibe,omitempty"`
+	Color       string   `json:"color,omitempty"`
+	Personality string   `json:"personality,omitempty"`
 	CreatedAt   int64    `json:"createdAt"`
 	UpdatedAt   int64    `json:"updatedAt"`
 }
@@ -351,13 +360,19 @@ func (r *ExpertRepo) Upsert(ctx context.Context, e *Expert) error {
 	}
 	return r.db.WithTx(ctx, func(tx *sql.Tx) error {
 		_, e2 := tx.ExecContext(ctx,
-			`INSERT INTO experts (id, name, description, prompt, model, tools_json, enabled, source, created_at, updated_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?)
+			`INSERT INTO experts (id, name, description, prompt, model, tools_json, enabled, source,
+			                      division, emoji, vibe, color, personality, created_at, updated_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
 			   prompt=excluded.prompt, model=excluded.model, tools_json=excluded.tools_json,
-			   enabled=excluded.enabled, source=excluded.source, updated_at=excluded.updated_at`,
+			   enabled=excluded.enabled, source=excluded.source,
+			   division=excluded.division, emoji=excluded.emoji, vibe=excluded.vibe,
+			   color=excluded.color, personality=excluded.personality,
+			   updated_at=excluded.updated_at`,
 			e.ID, e.Name, nullStr(e.Description), nullStr(e.Prompt), nullStr(e.Model),
-			tools, boolToInt(e.Enabled), e.Source, e.CreatedAt, e.UpdatedAt)
+			tools, boolToInt(e.Enabled), e.Source,
+			e.Division, e.Emoji, e.Vibe, e.Color, e.Personality,
+			e.CreatedAt, e.UpdatedAt)
 		return wrapErr("expert upsert", e2)
 	})
 }
@@ -365,7 +380,8 @@ func (r *ExpertRepo) Upsert(ctx context.Context, e *Expert) error {
 // List 列出专家。
 func (r *ExpertRepo) List(ctx context.Context) ([]*Expert, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, description, prompt, model, tools_json, enabled, source, created_at, updated_at
+		`SELECT id, name, description, prompt, model, tools_json, enabled, source,
+		        division, emoji, vibe, color, personality, created_at, updated_at
 		 FROM experts ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, wrapErr("expert list", err)
@@ -392,15 +408,21 @@ func (r *ExpertRepo) Delete(ctx context.Context, id string) error {
 
 func scanExpert(rows *sql.Rows) (*Expert, error) {
 	var e Expert
-	var desc, prompt, model sql.NullString
+	var desc, prompt, model, division, emoji, vibe, color, personality sql.NullString
 	var tools []byte
 	var enabled int64
-	if err := rows.Scan(&e.ID, &e.Name, &desc, &prompt, &model, &tools, &enabled, &e.Source, &e.CreatedAt, &e.UpdatedAt); err != nil {
+	if err := rows.Scan(&e.ID, &e.Name, &desc, &prompt, &model, &tools, &enabled, &e.Source,
+		&division, &emoji, &vibe, &color, &personality, &e.CreatedAt, &e.UpdatedAt); err != nil {
 		return nil, err
 	}
 	e.Description = scanNullStr(desc)
 	e.Prompt = scanNullStr(prompt)
 	e.Model = scanNullStr(model)
+	e.Division = scanNullStr(division)
+	e.Emoji = scanNullStr(emoji)
+	e.Vibe = scanNullStr(vibe)
+	e.Color = scanNullStr(color)
+	e.Personality = scanNullStr(personality)
 	e.Enabled = enabled != 0
 	if len(tools) > 0 {
 		_ = json.Unmarshal(tools, &e.Tools)

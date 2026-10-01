@@ -217,7 +217,14 @@ func (e *Engine) runOneClusterExpert(
 		return out
 	}
 
-	orch := e.newExpertOrchestrator(rec.request.Model)
+	// 子 Agent 的工作阶段逐条进入工作日志（与专家直连同款，见 emitExpertWork）。
+	// 集群里这一步尤其重要：8 位成员并行时，只有每位成员自己的 StageTool 才能
+	// 让用户分辨「哪条工具行是谁在跑」，否则时间线上只剩一堆没有归属的 tool。
+	// 每个 goroutine 有自己的 Orchestrator 实例，回调同步执行，不需要加锁；
+	// 生命周期与终态的守卫在 emitExpertWork 内部。
+	orch := e.newExpertOrchestrator(rec.request.Model, func(ev expert.WorkEvent) {
+		e.emitExpertWork(lifecycleCtx, rec, ev)
+	})
 	// 阶段跃迁事件：集群里同样要让「谁在规划/谁在实施」可见。
 	// 回调与 Activate 在同一 goroutine 上执行，且每个 goroutine 有独立实例，
 	// 因此这里不需要加锁。

@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Check, Sparkles, UserCheck, Search, X, Bot } from 'lucide-react'
-import {
-  DIVISION_LABELS,
-  EXPERTS,
-  type Expert
-} from './experts-data'
+import { Check, Loader2, Sparkles, UserCheck, Search, X, Bot } from 'lucide-react'
+import { filterExperts, useExpertsStore } from '../../store/experts-store'
+import { divisionLabel, type Expert } from './experts-data'
 import { ExpertEmoji } from './ExpertCard'
 
 export interface ExpertQuickPickerProps {
@@ -22,28 +19,32 @@ export interface ExpertQuickPickerProps {
 /** 候选席位键盘快捷键标签 */
 const SHORTCUT_KEYS = ['A', 'B', 'C', 'D'] as const
 
+/** 无输入时的默认推荐：全栈高级工程师；目录里没有就退化成第一位。 */
+const DEFAULT_RECOMMENDED_ID = 'engineering-senior-developer'
+
 /**
  * 根据输入框内容做关键词加权匹配推荐。
- * 无输入或无匹配时返回通用的全栈高级工程师。
+ *
+ * 目录为空（还在装载 / 装载失败）时返回 null —— 调用方据此渲染加载态，而不是拿
+ * 一个 undefined 去读 .name 把整个弹窗炸掉。
  */
-function getRecommendedExpert(text: string): Expert {
-  const q = text.trim().toLowerCase()
-  if (!q) {
-    return (
-      EXPERTS.find((e) => e.id === 'engineering-senior-developer') ??
-      EXPERTS[0]
-    )
-  }
+export function getRecommendedExpert(text: string, experts: Expert[]): Expert | null {
+  if (experts.length === 0) return null
+  const fallback = (): Expert =>
+    experts.find((e) => e.id === DEFAULT_RECOMMENDED_ID) ?? experts[0]
 
-  let bestExpert = EXPERTS[0]
+  const q = text.trim().toLowerCase()
+  if (!q) return fallback()
+
+  let bestExpert = experts[0]
   let bestScore = -1
 
-  for (const exp of EXPERTS) {
+  for (const exp of experts) {
     let score = 0
     const name = exp.name.toLowerCase()
     const desc = exp.description.toLowerCase()
     const div = exp.division.toLowerCase()
-    const divLabel = (DIVISION_LABELS[exp.division] ?? '').toLowerCase()
+    const divLabel = divisionLabel(exp.division).toLowerCase()
     const vibe = (exp.vibe ?? '').toLowerCase()
 
     // 常见关键词打分
@@ -62,12 +63,7 @@ function getRecommendedExpert(text: string): Expert {
     }
   }
 
-  if (bestScore <= 0) {
-    return (
-      EXPERTS.find((e) => e.id === 'engineering-senior-developer') ??
-      EXPERTS[0]
-    )
-  }
+  if (bestScore <= 0) return fallback()
   return bestExpert
 }
 
@@ -75,10 +71,13 @@ function getRecommendedExpert(text: string): Expert {
  * 专家快捷选择弹窗 (Popover)。
  *
  * 锚定在输入框上方：
- * - 顶部搜索框：自由检索全部 60 位覆盖各部门的代表专家。
+ * - 顶部搜索框：在**完整目录**（内置 + 自定义）里自由检索。
  * - 推荐区域：根据当前输入文字实时动态匹配 1 位最匹配的专家。
  * - 候选区域：3~4 个候选专家，支持 A/B/C/D 快捷键一键秒选。
  * - 样式完全跟随 5 套主题 CSS 变量（bg-surface / text-ink / border 等）。
+ *
+ * 目录来自 experts-store，与专家库页共用同一份数据：v2.5 的版本只认渲染层内联的
+ * 60 位样本，用户在这里搜不到后端目录里的另外 194 位专家。
  */
 export function ExpertQuickPicker({
   inputText,
@@ -90,25 +89,24 @@ export function ExpertQuickPicker({
   const rootRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
-  // 1. 动态推荐位专家（响应当前输入内容）
-  const recommended = useMemo(() => {
-    return getRecommendedExpert(inputText)
-  }, [inputText])
+  const experts = useExpertsStore((s) => s.experts)
+  const loading = useExpertsStore((s) => s.loading)
+  const loaded = useExpertsStore((s) => s.loaded)
+  const load = useExpertsStore((s) => s.load)
 
-  // 2. 搜索过滤列表
+  // 用户可能从没打开过专家库页：这里补一次懒加载，否则输入框的专家选择器会是空的。
+  useEffect(() => {
+    if (!loaded) void load()
+  }, [loaded, load])
+
+  // 1. 动态推荐位专家（响应当前输入内容）
+  const recommended = useMemo(() => getRecommendedExpert(inputText, experts), [inputText, experts])
+
+  // 2. 搜索过滤列表（与专家库页共用同一套匹配规则：名称/描述/部门/中文部门名/vibe）
   const searchResults = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return []
-    return EXPERTS.filter((e) => {
-      const divLabel = (DIVISION_LABELS[e.division] ?? '').toLowerCase()
-      return (
-        e.name.toLowerCase().includes(q) ||
-        e.description.toLowerCase().includes(q) ||
-        e.division.toLowerCase().includes(q) ||
-        divLabel.includes(q)
-      )
-    })
-  }, [searchQuery])
+    if (!searchQuery.trim()) return []
+    return filterExperts(experts, { query: searchQuery })
+  }, [searchQuery, experts])
 
   // 3. 候选专家（3~4 位）
   const candidateExperts = useMemo(() => {
@@ -124,18 +122,18 @@ export function ExpertQuickPicker({
       'engineering-code-reviewer'
     ]
     const list = presetIds
-      .map((id) => EXPERTS.find((e) => e.id === id))
-      .filter((e): e is Expert => Boolean(e && e.id !== recommended.id))
+      .map((id) => experts.find((e) => e.id === id))
+      .filter((e): e is Expert => Boolean(e && e.id !== recommended?.id))
 
     // 如果被推荐去重后少于 4 个，从前面补齐
-    for (const exp of EXPERTS) {
+    for (const exp of experts) {
       if (list.length >= 4) break
-      if (exp.id !== recommended.id && !list.some((item) => item.id === exp.id)) {
+      if (exp.id !== recommended?.id && !list.some((item) => item.id === exp.id)) {
         list.push(exp)
       }
     }
     return list.slice(0, 4)
-  }, [searchQuery, searchResults, recommended.id])
+  }, [searchQuery, searchResults, recommended, experts])
 
   // 外部点击与键盘 Esc 监听
   useEffect(() => {
@@ -176,6 +174,8 @@ export function ExpertQuickPicker({
       }
     }
   }
+
+  const selectedName = experts.find((e) => e.id === selectedExpertId)?.name ?? selectedExpertId
 
   return (
     <div
@@ -231,8 +231,22 @@ export function ExpertQuickPicker({
       </div>
 
       <div className="max-h-[320px] overflow-y-auto p-2 flex flex-col gap-2">
-        {/* 搜索模式下的结果 */}
-        {searchQuery.trim() ? (
+        {/* 目录还没到手：显示加载态而不是空壳。搜索框仍可用，装载完成后自动出现结果。 */}
+        {experts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+            {loading ? (
+              <>
+                <Loader2 size={16} className="animate-spin text-accent" />
+                <span className="text-[12px] text-ink-muted">正在加载专家目录…</span>
+              </>
+            ) : (
+              <span className="text-[12px] text-ink-muted">
+                暂无可用专家（专家目录未就绪）
+              </span>
+            )}
+          </div>
+        ) : searchQuery.trim() ? (
+          /* 搜索模式下的结果 */
           <div>
             <div className="px-1.5 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
               搜索结果 ({searchResults.length})
@@ -267,8 +281,13 @@ export function ExpertQuickPicker({
                             {exp.name}
                           </span>
                           <span className="text-[11px] text-ink-faint">
-                            · {DIVISION_LABELS[exp.division] ?? exp.division}
+                            · {divisionLabel(exp.division)}
                           </span>
+                          {exp.custom === true && (
+                            <span className="shrink-0 rounded border border-accent/30 bg-accent/15 px-1 py-0.2 text-[10px] font-medium text-accent">
+                              自定义
+                            </span>
+                          )}
                         </div>
                         <p className="truncate text-[11.5px] text-ink-muted">
                           {exp.description}
@@ -289,100 +308,104 @@ export function ExpertQuickPicker({
         ) : (
           <>
             {/* 1. 推荐区域：根据输入框打的文字做关键词匹配 */}
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center justify-between px-1.5 text-[11px] font-medium text-ink-muted">
-                <span className="flex items-center gap-1 text-accent">
-                  <Sparkles size={11} />
-                  <span>智能推荐</span>
-                </span>
-                <span className="text-[10.5px] text-ink-faint">
-                  {inputText.trim() ? '依据输入分析' : '默认推荐'}
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onSelect(recommended)
-                  onClose()
-                }}
-                className={`flex w-full items-start gap-2.5 rounded-subtle border p-2 text-left transition-colors ${
-                  recommended.id === selectedExpertId
-                    ? 'border-accent/40 bg-accent/15'
-                    : 'border-accent/20 bg-accent/[0.04] hover:bg-accent/[0.08]'
-                }`}
-              >
-                <ExpertEmoji emoji={recommended.emoji} color={recommended.color} size="sm" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-semibold text-ink">
-                      {recommended.name}
-                    </span>
-                    <span className="rounded bg-accent/15 px-1.5 py-0.2 font-mono text-[10.5px] font-medium text-accent">
-                      {DIVISION_LABELS[recommended.division] ?? recommended.division}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 line-clamp-2 text-[11.5px] leading-relaxed text-ink-muted">
-                    {recommended.description}
-                  </p>
+            {recommended && (
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between px-1.5 text-[11px] font-medium text-ink-muted">
+                  <span className="flex items-center gap-1 text-accent">
+                    <Sparkles size={11} />
+                    <span>智能推荐</span>
+                  </span>
+                  <span className="text-[10.5px] text-ink-faint">
+                    {inputText.trim() ? '依据输入分析' : '默认推荐'}
+                  </span>
                 </div>
-                {recommended.id === selectedExpertId && (
-                  <Check size={14} className="mt-1 shrink-0 text-accent" />
-                )}
-              </button>
-            </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelect(recommended)
+                    onClose()
+                  }}
+                  className={`flex w-full items-start gap-2.5 rounded-subtle border p-2 text-left transition-colors ${
+                    recommended.id === selectedExpertId
+                      ? 'border-accent/40 bg-accent/15'
+                      : 'border-accent/20 bg-accent/[0.04] hover:bg-accent/[0.08]'
+                  }`}
+                >
+                  <ExpertEmoji emoji={recommended.emoji} color={recommended.color} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-[13px] font-semibold text-ink">
+                        {recommended.name}
+                      </span>
+                      <span className="rounded bg-accent/15 px-1.5 py-0.2 font-mono text-[10.5px] font-medium text-accent">
+                        {divisionLabel(recommended.division)}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 line-clamp-2 text-[11.5px] leading-relaxed text-ink-muted">
+                      {recommended.description}
+                    </p>
+                  </div>
+                  {recommended.id === selectedExpertId && (
+                    <Check size={14} className="mt-1 shrink-0 text-accent" />
+                  )}
+                </button>
+              </div>
+            )}
 
             {/* 2. 候选区域：3~4 个候选专家（配 A/B/C/D 快捷键） */}
-            <div className="flex flex-col gap-1 pt-1">
-              <div className="flex items-center justify-between px-1.5 text-[11px] font-medium text-ink-faint">
-                <span>常用候选专家</span>
-                <span className="font-mono text-[10px]">快捷键 A-D</span>
-              </div>
+            {candidateExperts.length > 0 && (
+              <div className="flex flex-col gap-1 pt-1">
+                <div className="flex items-center justify-between px-1.5 text-[11px] font-medium text-ink-faint">
+                  <span>常用候选专家</span>
+                  <span className="font-mono text-[10px]">快捷键 A-D</span>
+                </div>
 
-              <div className="flex flex-col gap-1">
-                {candidateExperts.map((exp, idx) => {
-                  const isSelected = exp.id === selectedExpertId
-                  const shortcut = SHORTCUT_KEYS[idx]
-                  return (
-                    <button
-                      key={exp.id}
-                      type="button"
-                      onClick={() => {
-                        onSelect(exp)
-                        onClose()
-                      }}
-                      className={`flex w-full items-center gap-2.5 rounded-subtle p-2 text-left transition-colors ${
-                        isSelected
-                          ? 'border border-accent/40 bg-accent/15'
-                          : 'hover:bg-surface border border-transparent'
-                      }`}
-                    >
-                      <ExpertEmoji emoji={exp.emoji} color={exp.color} size="sm" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-[12.5px] font-medium text-ink">
-                            {exp.name}
-                          </span>
-                          <span className="text-[11px] text-ink-faint">
-                            · {DIVISION_LABELS[exp.division] ?? exp.division}
-                          </span>
-                        </div>
-                        <p className="truncate text-[11.5px] text-ink-muted">
-                          {exp.description}
-                        </p>
-                      </div>
-                      <span
-                        className="shrink-0 rounded border border-border/[0.1] bg-canvas px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-faint shadow-subtle"
-                        title={`按 ${shortcut} 快捷选中`}
+                <div className="flex flex-col gap-1">
+                  {candidateExperts.map((exp, idx) => {
+                    const isSelected = exp.id === selectedExpertId
+                    const shortcut = SHORTCUT_KEYS[idx]
+                    return (
+                      <button
+                        key={exp.id}
+                        type="button"
+                        onClick={() => {
+                          onSelect(exp)
+                          onClose()
+                        }}
+                        className={`flex w-full items-center gap-2.5 rounded-subtle p-2 text-left transition-colors ${
+                          isSelected
+                            ? 'border border-accent/40 bg-accent/15'
+                            : 'hover:bg-surface border border-transparent'
+                        }`}
                       >
-                        {shortcut}
-                      </span>
-                      {isSelected && <Check size={14} className="shrink-0 text-accent" />}
-                    </button>
-                  )
-                })}
+                        <ExpertEmoji emoji={exp.emoji} color={exp.color} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-[12.5px] font-medium text-ink">
+                              {exp.name}
+                            </span>
+                            <span className="text-[11px] text-ink-faint">
+                              · {divisionLabel(exp.division)}
+                            </span>
+                          </div>
+                          <p className="truncate text-[11.5px] text-ink-muted">
+                            {exp.description}
+                          </p>
+                        </div>
+                        <span
+                          className="shrink-0 rounded border border-border/[0.1] bg-canvas px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-faint shadow-subtle"
+                          title={`按 ${shortcut} 快捷选中`}
+                        >
+                          {shortcut}
+                        </span>
+                        {isSelected && <Check size={14} className="shrink-0 text-accent" />}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
+            )}
           </>
         )}
       </div>
@@ -393,7 +416,7 @@ export function ExpertQuickPicker({
           <UserCheck size={12} className="text-accent" />
           <span>
             {selectedExpertId
-              ? `已选绑定：${EXPERTS.find((e) => e.id === selectedExpertId)?.name ?? selectedExpertId}`
+              ? `已选绑定：${selectedName}`
               : '未绑定专家（主模型自主判断）'}
           </span>
         </span>

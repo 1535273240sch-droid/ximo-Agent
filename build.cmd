@@ -29,7 +29,7 @@ if defined XIMO_USE_PROXY (
   set "HTTP_PROXY=http://127.0.0.1:7897"
 )
 
-set "VERSION=v2.5.1"
+set "VERSION=v2.6.0"
 REM main.Version (exported) is what -X can override; main.version never could.
 set "LDFLAGS=-X main.Version=%VERSION%"
 

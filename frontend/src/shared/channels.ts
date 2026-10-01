@@ -53,6 +53,16 @@ export const IPC = {
   MemoryStats: 'ximo:memory:stats',
   MemoryClear: 'ximo:memory:clear',
 
+  /**
+   * 专家目录读写面（v2.6.0）。
+   *
+   * 与 FrameType.Expert* 一一对应；主进程把每个频道转成同名帧发往后端。
+   * 专家库页（含自定义专家的增删改）走这三个频道。
+   */
+  ExpertList: 'ximo:expert:list',
+  ExpertSave: 'ximo:expert:save',
+  ExpertDelete: 'ximo:expert:delete',
+
   WindowMinimize: 'ximo:window:minimize',
   WindowMaximize: 'ximo:window:maximize',
   WindowClose: 'ximo:window:close'

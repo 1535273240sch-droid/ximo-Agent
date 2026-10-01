@@ -90,6 +90,23 @@ type Dependencies struct {
 	// 顺序（任务 05 的 by_expert / by_division 分配）。nil 时用整个池的默认
 	// 顺序。
 	SubAgentCandidates func(expertID, division string) []string
+	// RunRequestCatalog 回填崩溃前那次 run 的原始 prompt 与 model（可选）。
+	//
+	// 为什么需要它：prompt 与 model 不在事件日志里（日志只存边界，不存载荷），
+	// 因此 rehydrateRun 只能拿一个占位 prompt —— 用户点「继续」后，这条恢复出来的
+	// run 会用占位 prompt + provider 默认模型重新执行，而不是他当初提交的那个任务
+	// 与那个模型（审核文档 V1）。
+	//
+	// runs 表本来就存了这两列（engine 提交时写入），这里给引擎一个只读入口把它取回来。
+	// nil 时退回旧行为（占位 prompt + 默认模型），恢复流程本身不受影响。
+	RunRequestCatalog RunRequestCatalog
+}
+
+// RunRequestCatalog 按 run id 取回持久化的原始请求信息。
+type RunRequestCatalog interface {
+	// RunRequest 返回该 run 的 prompt 与 model；ok 为 false 表示查不到
+	// （run 太老、库被清过、或本装配没有存储层）。两个字符串都可能为空。
+	RunRequest(ctx context.Context, runID string) (prompt, model string, ok bool)
 }
 
 // Engine is the concrete implementation of the ch. 32 Engine interface.
@@ -678,14 +695,45 @@ func (e *Engine) GetRun(ctx context.Context, runID string) (types.Run, error) {
 		snap, err := rec.actor.Snapshot(ctx)
 		if err == nil {
 			if r, ok := snap[runID]; ok {
-				return r, nil
+				return e.fillAnswerFromLog(ctx, runID, r), nil
 			}
 		}
-		return rec.snapshot(), nil
+		return e.fillAnswerFromLog(ctx, runID, rec.snapshot()), nil
 	}
 	// Not in memory: it may be a run from a previous process. Rebuild its state
 	// from the durable log so a UI reconnect after an Engine restart works.
 	return e.loadRunFromLog(ctx, runID)
+}
+
+// fillAnswerFromLog 在「已终态但答案还没写进 actor」的中间窗口里，用日志补上答案。
+//
+// 为什么会有这个窗口：finishRun 必须先做状态跃迁（它产生 run.state_changed），再做
+// CloseRun（它产生 run.completed 并把答案写到 actor 的记录上）。顺序不能反 —— 反过
+// 来会在终态事件之后继续写事件，而事件流在终态就关闭了（v2.5.0 的 closure 修复踩过
+// 这个坑）。于是这两步之间必然存在一个瞬间：actor 说「已 completed」，答案还是空的。
+//
+// 后果不是理论问题：GetRun 是状态轮询与 IPC 状态帧的来源，谁在这个瞬间读到它，就会
+// 看到「已完成但没有回答」。前端的兜底逻辑只在 answer 非空时才补消息，所以用户看到
+// 的是一段没有回复的完成记录 —— 与审核文档反复强调的「回复不显示」是同一类缺陷。
+//
+// 这里不改变写入顺序（那是契约要求的），而是让读取方在终态+空答案时去日志取权威
+// 答案：final_answer 事件在状态跃迁之前就已经落库，所以它一定读得到。
+func (e *Engine) fillAnswerFromLog(ctx context.Context, runID string, run types.Run) types.Run {
+	if !run.State.Terminal() || run.Answer != "" {
+		return run
+	}
+	fromLog, err := e.loadRunFromLog(ctx, runID)
+	if err != nil {
+		return run
+	}
+	if fromLog.Answer != "" {
+		run.Answer = fromLog.Answer
+	}
+	// 错误同理：CloseRun 之前 actor 上的 Err 也是空的，而 run.failed 事件带着它。
+	if run.Err == nil && fromLog.Err != nil {
+		run.Err = fromLog.Err
+	}
+	return run
 }
 
 // Events returns a run's event stream.
@@ -819,11 +867,16 @@ func (e *Engine) Recover(ctx context.Context) ([]RecoveryPlan, error) {
 		return nil, err
 	}
 	out := make([]RecoveryPlan, 0, len(plans))
-	for _, plan := range plans {
+	for i := range plans {
+		// 传指针：applyRecoveryPlan / rehydrateRun 会往 Notes 里追加"这次恢复观察到
+		// 了什么"（例如「从 run 记录里回填到了原始 prompt」）。按值传递时那些备注
+		// 只写进副本，调用方（以及恢复报告）永远看不到 —— 恢复备注的意义就在于
+		// 让人事后能解释"这条 run 为什么这样被继续"，丢了等于没写。
+		plan := &plans[i]
 		if err := e.applyRecoveryPlan(ctx, plan); err != nil {
 			plan.Notes = append(plan.Notes, "apply failed: "+types.RedactString(err.Error()))
 		}
-		out = append(out, plan)
+		out = append(out, *plan)
 	}
 	return out, nil
 }
@@ -840,7 +893,10 @@ func (e *Engine) RecoverForIPC(ctx context.Context) ([]types.RecoveryPlan, error
 }
 
 // applyRecoveryPlan acts on one recovery plan.
-func (e *Engine) applyRecoveryPlan(ctx context.Context, plan RecoveryPlan) error {
+//
+// It takes a pointer so the notes it (and rehydrateRun) append reach the caller's
+// report: a by-value parameter would silently swallow them.
+func (e *Engine) applyRecoveryPlan(ctx context.Context, plan *RecoveryPlan) error {
 	switch plan.Decision {
 	case Skip:
 		return nil
@@ -914,12 +970,12 @@ func (e *Engine) applyRecoveryPlan(ctx context.Context, plan RecoveryPlan) error
 		if rec.machine.State() != types.StateWaitingUser {
 			if err := rec.machine.TransitionTo(ctx, types.StateWaitingUser, agent.Transition{
 				Reason:        "engine restarted; run is ready to resume from the last safe checkpoint",
-				WaitingReason: recoveryParkReason(plan),
+				WaitingReason: recoveryParkReason(*plan),
 			}); err != nil {
 				return err
 			}
 		}
-		return rec.actor.ParkRun(ctx, plan.RunID, recoveryParkReason(plan), nil)
+		return rec.actor.ParkRun(ctx, plan.RunID, recoveryParkReason(*plan), nil)
 
 	default:
 		return types.NewError(types.CodeInternal, "unknown recovery decision %q", string(plan.Decision))
@@ -937,7 +993,7 @@ func recoveryParkReason(plan RecoveryPlan) string {
 
 // rehydrateRun rebuilds an in-memory run record from a recovery plan so the run
 // can be resumed. It returns nil when the run's request cannot be reconstructed.
-func (e *Engine) rehydrateRun(ctx context.Context, plan RecoveryPlan) (*runRecord, error) {
+func (e *Engine) rehydrateRun(ctx context.Context, plan *RecoveryPlan) (*runRecord, error) {
 	e.mu.Lock()
 	if rec, ok := e.runs[plan.RunID]; ok {
 		e.mu.Unlock()
@@ -958,15 +1014,34 @@ func (e *Engine) rehydrateRun(ctx context.Context, plan RecoveryPlan) (*runRecor
 
 	// The prompt and model are not in the event log by design (the log stores
 	// boundaries, not payloads), so a run recovered from a previous process
-	// cannot be re-executed blindly. Recording it as a synthetic prompt keeps
-	// the state machine coherent and surfaces the gap to the user rather than
-	// inventing a task.
+	// cannot be re-executed blindly. The runs table does persist them, though
+	// (Submit writes prompt+model), so we ask the catalog for the original
+	// values and only fall back to a synthetic prompt when they are unavailable.
+	//
+	// Using the original prompt matters beyond cosmetics: the placeholder text
+	// would be sent to the model as the user's task, so "continue" on a
+	// recovered run would ask the model to work on a sentence about a missing
+	// prompt. The model falls back to the provider default when Model is empty,
+	// which silently switches the user's chosen model (audit V1).
 	req := types.SubmitRequest{
 		SessionID: sessionID,
 		Prompt:    "(recovered run: original prompt unavailable in this process)",
 		Priority:  types.PriorityNormal,
 		Effort:    types.EffortHigh,
-	}.Normalized()
+	}
+	if e.deps.RunRequestCatalog != nil {
+		if prompt, model, ok := e.deps.RunRequestCatalog.RunRequest(ctx, plan.RunID); ok {
+			if p := strings.TrimSpace(prompt); p != "" {
+				req.Prompt = p
+				plan.Notes = append(plan.Notes, "recovered the original prompt from the run record")
+			}
+			if m := strings.TrimSpace(model); m != "" {
+				req.Model = m
+				plan.Notes = append(plan.Notes, "recovered the original model from the run record")
+			}
+		}
+	}
+	req = req.Normalized()
 
 	run := types.Run{
 		ID: plan.RunID, SessionID: sessionID,

@@ -67,6 +67,15 @@ const (
 	TypeMemoryImport      = "system.memory.import"
 	TypeMemoryStats       = "system.memory.stats"
 	TypeMemoryClear       = "system.memory.clear"
+
+	// ---- 专家目录（v2.6.0）----
+	//
+	// 与记忆同一层理由：专家目录是跨 run 的长期资产（内置 254 位 + 用户自建），
+	// 不属于任何一次 run，所以挂在 system.expert.* 而不是 engine.run.*。
+	// list 一次返回完整目录，界面不再自己维护一份硬编码副本。
+	TypeExpertList   = "system.expert.list"
+	TypeExpertSave   = "system.expert.save"
+	TypeExpertDelete = "system.expert.delete"
 )
 
 // FrameHeader 帧头结构体（完全对齐任务01规范中提供给 02 和 05 的契约）

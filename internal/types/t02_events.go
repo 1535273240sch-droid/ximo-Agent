@@ -103,6 +103,21 @@ const (
 	// run, with the path that activated each one, so the Work Log can show
 	// "recalled N memories" and explain why.
 	EventMemoryRecalled EventType = "memory.recalled"
+
+	// ---- 专家子代理的工作阶段（durable）----
+	//
+	// EventExpertWork 携带专家子代理（用户手选的专家 / Agent 集群成员）自己的
+	// 工作阶段：StageStarted / StageMessage / StageTool / StageFinished。
+	//
+	// 为什么必须是一条独立事件：主循环的 round/tool 事件描述的是**主 Agent** 自己
+	// 的回合与工具调用，而手选专家与集群路径根本不走主循环 —— 真正干活的是子
+	// Agent。没有这条事件时，子 Agent 的阶段只能攒在 Outcome.Events 里随
+	// final_answer 折成一个计数丢掉，Work Log 只剩一条永远不结束的工具行。
+	//
+	// 必须 durable：阶段是用户可见的逻辑边界（「专家正在调哪个工具、结果如何」），
+	// 合并器会重建 progress 类事件的载荷，挂在 ephemeral 事件上会被静默剥掉；
+	// 落库后断线重连也能从持久日志补回完整的子代理时间线。
+	EventExpertWork EventType = "expert.work"
 )
 
 // durableEvents is the closed set of event types written to the event log.
@@ -132,6 +147,9 @@ var durableEvents = map[EventType]bool{
 	// Recall results drive the "which memories were lit up" view; they are a
 	// logical boundary of the run, not chatter.
 	EventMemoryRecalled: true,
+	// 专家子代理的工作阶段：它们是子 Agent 时间线的唯一证据来源，被合并掉就等于
+	// 用户永远看不到专家到底做了什么（且重连后无法补回）。
+	EventExpertWork: true,
 }
 
 // Durable reports whether this event type must be persisted. The event log
