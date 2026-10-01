@@ -272,7 +272,13 @@ func (o *Orchestrator) runPhase(
 	}
 
 	// 实施阶段的 system 提示词 = 专家人格 + 已确认的方案。
-	systemPrompt := BuildSystemPrompt(e)
+	//
+	// 工具一节必须用**过滤后**的清单（runner.effectiveToolNames，与即将发出去的
+	// function schema 同一判据）：部门推荐表里含大量本 build 未实现的名字，照推荐表
+	// 写进提示词，模型会去调用一个必然失败的工具，或在回答里声称自己用过了。
+	// 两者一致是这条链路上最便宜也最有效的约束 —— 模型看到什么，就能调什么。
+	effectiveTools := runner.effectiveToolNames()
+	systemPrompt := BuildSystemPromptWithTools(e, effectiveTools)
 	if plan != "" {
 		systemPrompt += "\n\n## 已确认的实施方案\n" + plan + "\n\n请严格按上述方案步骤有序实施。"
 	}

@@ -31,7 +31,7 @@ import (
 // exact failure that made `ximo-agent.exe --version` disagree with the release
 // tag. Keep them exported and keep the ldflags spelling in sync.
 var (
-	Version   = "v2.5.0"
+	Version   = "v2.5.1"
 	gitCommit = "dev"
 	buildTime = "unknown"
 )

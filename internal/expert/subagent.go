@@ -519,6 +519,22 @@ func (o SubAgentOptions) resolveTools() []provider.ToolDefinition {
 	return defs
 }
 
+// effectiveToolNames 返回实际会进入 function schema 的工具名。
+//
+// 与 resolveTools 共用同一判据（只是把描述与参数丢掉），因此系统提示词里宣传的
+// 工具清单与模型真正能调用的工具清单不会漂移 —— 提示词说有的、schema 里就有；
+// schema 里没有的，提示词也不提。
+func (o SubAgentOptions) effectiveToolNames() []string {
+	defs := o.resolveTools()
+	out := make([]string, 0, len(defs))
+	for _, d := range defs {
+		if strings.TrimSpace(d.Name) != "" {
+			out = append(out, d.Name)
+		}
+	}
+	return out
+}
+
 func (o SubAgentOptions) model() string { return o.Model }
 
 func (o SubAgentOptions) maxTokens() int {

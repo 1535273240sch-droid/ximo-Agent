@@ -287,7 +287,23 @@ func AnalyzeExpert(e Expert) ExpertAnalysis {
 //
 // 注意：提示词前缀的 `你现在扮演 **{name}**（{emoji}）。` 格式被 sub-agent.go
 // 用来反解专家身份，改动格式需同步改解析正则。
+//
+// 工具一节用的是「推荐工具集」，即**未过滤**的名单。真正跑子代理时必须改用
+// BuildSystemPromptWithTools：推荐表里有大量本 build 未实现的名字（code_execute /
+// git_operations / todo_write…），照着它写进提示词，模型就会去调用一个必然失败的
+// 工具，或者干脆在回答里声称自己用过了。本函数保留给「只看专家档案、不执行」的
+// 信息型返回。
 func BuildSystemPrompt(e Expert) string {
+	return BuildSystemPromptWithTools(e, AnalyzeExpert(e).Tools)
+}
+
+// BuildSystemPromptWithTools 生成专家系统提示词，但「可用工具」一节只列 tools。
+//
+// tools 必须是调用方**核实过的**工具名（子代理路径传的是 resolveTools 过滤后的
+// 结果），因为它会原样告诉模型「你有这些工具」。空列表不写成"你已被配置以下工具"
+// 加一段空白，而是明确告知没有工具可用并禁止虚构工具调用 —— 「没工具」和
+// 「有工具但列表为空」对模型来说是两种完全不同的指令。
+func BuildSystemPromptWithTools(e Expert, tools []string) string {
 	analysis := AnalyzeExpert(e)
 
 	var b strings.Builder
@@ -297,16 +313,31 @@ func BuildSystemPrompt(e Expert) string {
 	b.WriteString(e.Description)
 	b.WriteString("\n\n## 你的工作风格\n")
 	b.WriteString(e.Vibe)
-	b.WriteString("\n\n## 可用工具\n你已被配置以下工具，请在需要时主动使用：\n")
-	for _, t := range analysis.Tools {
-		fmt.Fprintf(&b, "- `%s`\n", t)
+
+	if len(tools) == 0 {
+		b.WriteString("\n\n## 可用工具\n")
+		b.WriteString("本次**没有任何可用工具**（本 build 未注册该专家的推荐工具）。\n")
+		b.WriteString("- 请只依靠你自己的知识与推理作答，不要声称调用了任何工具。\n")
+		b.WriteString("- 不要输出工具调用、工具名或伪造的执行结果；如果任务必须依赖某个工具才能完成，" +
+			"直接说明缺少什么能力，让用户知道边界在哪里。\n")
+	} else {
+		b.WriteString("\n\n## 可用工具\n你已被配置以下工具，请在需要时主动使用：\n")
+		for _, t := range tools {
+			fmt.Fprintf(&b, "- `%s`\n", t)
+		}
 	}
+
 	fmt.Fprintf(&b, "\n## %s\n", analysis.Workflow)
-	fmt.Fprintf(&b, "\n## 输出要求\n")
+
+	b.WriteString("\n## 输出要求\n")
 	fmt.Fprintf(&b, "- 始终以 %s 的专业视角分析和回答问题\n", e.Name)
 	b.WriteString("- 使用该领域专业术语，但确保可理解\n")
 	b.WriteString("- 给出可操作的具体建议，而非泛泛而谈\n")
-	b.WriteString("- 主动使用可用工具以提升回答质量\n")
+	if len(tools) > 0 {
+		b.WriteString("- 主动使用可用工具以提升回答质量\n")
+	} else {
+		b.WriteString("- 不要编造工具执行结果：没有工具可用时，如实给出你的分析与建议\n")
+	}
 	b.WriteString("- 按照预设工作流的步骤推进任务，确保有序执行")
 	return b.String()
 }
